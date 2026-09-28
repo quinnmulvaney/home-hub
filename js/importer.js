@@ -85,7 +85,7 @@ const toISO = (s) => {
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); // Chase: MM/DD/YYYY
   return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : '';
 };
-const titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-/&(*.#])([a-z])/g, (_, p, c) => p + c.toUpperCase());
+const titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-/&(*#])([a-z])/g, (_, p, c) => p + c.toUpperCase());
 
 // Normalize every supported format to { date, name, out (money out, + / −), account, sourceCategory, skipType }.
 function normalize(rows, fileName) {
