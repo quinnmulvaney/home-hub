@@ -310,3 +310,20 @@ details summary { cursor: pointer; color: var(--text-2); font-size: 14px; margin
 .table-view table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
 .table-view th, .table-view td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--border); }
 .table-view th:first-child, .table-view td:first-child { text-align: left; }
+
+/* ---------- bank sync ---------- */
+
+.review-banner {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%;
+  margin: 0 0 14px; padding: 12px 14px; border-radius: var(--radius); text-align: left;
+  border: 1px solid color-mix(in srgb, #c98500 45%, transparent); background: color-mix(in srgb, #eda100 14%, var(--surface));
+}
+.review-go { font-weight: 650; color: var(--accent); white-space: nowrap; }
+.badge.warn { background: color-mix(in srgb, #eda100 22%, transparent); color: var(--text); font-size: 11px; padding: 1px 7px; vertical-align: 1px; }
+.row.static { cursor: default; }
+.row.static:hover { background: none; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin: 4px 0 8px; cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 1px 0 0; flex: none; }
+.rule-box { background: var(--surface-2); border-radius: 10px; padding: 10px 12px 12px; margin: 4px 0 10px; }
+.rule-box .check { margin: 0 0 8px; }
+.rule-box .input { min-height: 38px; background: var(--surface); }

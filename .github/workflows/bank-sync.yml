@@ -1,0 +1,52 @@
+name: Bank sync
+
+on:
+  schedule:
+    - cron: "23 11,19,3 * * *"   # ~7am, 3pm, 11pm Eastern. SimpleFIN refreshes from the bank about once a day.
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of history to request"
+        default: "30"
+      dry_run:
+        description: "Compute only, write nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # only for the keep-alive commit below
+
+concurrency: bank-sync
+
+jobs:
+  sync:
+    if: github.repository == 'quinnmulvaney/home-hub'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet firebase-admin
+
+      - name: Sync transactions
+        run: python sync/bank_sync.py
+        env:
+          SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          HOUSEHOLD_ID: ${{ vars.HOUSEHOLD_ID }}
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+
+      # GitHub pauses scheduled workflows in repos with no activity for 60 days.
+      - name: Keep schedule alive
+        run: |
+          if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt $(( 50 * 86400 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Keep bank sync schedule active"
+            git push
+          fi

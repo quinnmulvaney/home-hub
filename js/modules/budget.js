@@ -3,11 +3,12 @@ import {
   esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, dayLabel,
   openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId,
 } from '../util.js';
+import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
 
 // Data model (both collections live under the household):
 //   categories:   { name, icon, type: 'expense'|'income', budget (monthly), order, archived }
 //   transactions: { date 'YYYY-MM-DD', amount (expense < 0 = refund), type, categoryId, note, account?, source?, createdAt, createdBy }
-store.registerCollections(['categories', 'transactions']);
+store.registerCollections(['categories', 'transactions', 'rules', 'accounts']);
 
 const DEFAULT_CATEGORIES = [
   ['Paycheck', '💵', 'income'], ['Other income', '🎁', 'income'],
@@ -25,6 +26,7 @@ const EMOJI = ['🏠', '💡', '💧', '🔥', '📶', '🛒', '🍔', '☕', '�
 // View state survives switching tabs/modules.
 const ui = { month: monthKey(new Date()), tab: pref('budgetTab', 'overview'), search: '', cat: '' };
 
+const REVIEW = '__review';
 const sum = (list) => Math.round(list.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
 const sortCats = (list) => [...list].sort((a, b) => (a.order ?? 999) - (b.order ?? 999) || a.name.localeCompare(b.name));
 
@@ -40,10 +42,16 @@ export default {
     let cats = [];
     let txs = [];
     let catById = new Map();
+    let accounts = [];
+    let bankStatus = null;
+    let rules = [];
 
     const unsubs = [
       store.subscribe('categories', (list) => { cats = sortCats(list); catById = new Map(cats.map((c) => [c.id, c])); draw(); }),
       store.subscribe('transactions', (list) => { txs = list; draw(); }),
+      store.subscribe('accounts', (list) => { accounts = list; draw(); }),
+      store.subscribe('bankSync', (list) => { bankStatus = list.find((d) => d.id === 'status') || null; draw(); }),
+      store.subscribe('rules', (list) => { rules = list; }),
     ];
 
     function draw() {
@@ -89,7 +97,13 @@ export default {
       const isCurrent = ui.month === monthKey(now);
       const pace = isCurrent ? now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() : null;
 
+      const reviewCount = txs.filter((t) => t.needsReview).length;
       return `
+        ${reviewCount ? `
+          <button class="review-banner" data-action="show-review">
+            <span>⚠ <b>${reviewCount}</b> bank transaction${reviewCount === 1 ? '' : 's'} need${reviewCount === 1 ? 's' : ''} a category</span>
+            <span class="review-go">Review ›</span>
+          </button>` : ''}
         <div class="tiles">
           ${tile('Income', money(income))}
           ${tile('Spent', money(spent))}
@@ -108,9 +122,40 @@ export default {
             : `<p class="muted">No spending yet this month. Tap <b>+</b> to add a transaction${totalBudget ? '' : ', and set monthly budgets under <b>Categories</b>'}.</p>`}
         </section>
 
+        ${accountsCard()}
+
         <section class="card">
           <div class="card-head"><h2>Last 6 months</h2></div>
           ${trendChart()}
+        </section>`;
+    }
+
+    function accountsCard() {
+      if (!accounts.length && !bankStatus) return '';
+      const ago = (ms) => {
+        if (!ms) return 'never';
+        const mins = Math.round((Date.now() - ms) / 60000);
+        if (mins < 60) return `${Math.max(mins, 1)} min ago`;
+        if (mins < 48 * 60) return `${Math.round(mins / 60)} h ago`;
+        return `${Math.round(mins / 1440)} days ago`;
+      };
+      const stale = bankStatus && Date.now() - bankStatus.lastRun > 2 * 864e5;
+      const errors = bankStatus?.errors || [];
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Accounts</h2><span class="muted small">Synced ${ago(bankStatus?.lastRun)}</span></div>
+          ${errors.length || stale ? `<p class="form-error small">⚠ ${errors.length ? errors.map(esc).join('<br>') : 'Bank sync hasn’t run in over 2 days.'}${errors.length ? '<br>You may need to reconnect this bank in SimpleFIN.' : ''}</p>` : ''}
+          <div class="list">
+            ${[...accounts].sort((a, b) => a.name.localeCompare(b.name)).map((a) => `
+              <div class="row static">
+                <span class="cat-icon" aria-hidden="true">${a.balance < 0 ? '💳' : '🏦'}</span>
+                <span class="row-main">
+                  <span class="row-title">${esc(a.name)}</span>
+                  <span class="row-sub">${esc(a.org || '')}${a.balanceDate ? ` · as of ${esc(new Date(a.balanceDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}` : ''}</span>
+                </span>
+                <span class="row-amt">${a.balance < 0 ? `${money(-a.balance)} <span class="muted small">owed</span>` : money(a.balance)}</span>
+              </div>`).join('')}
+          </div>
         </section>`;
     }
 
@@ -211,8 +256,10 @@ export default {
 
     function transactionsTab(monthTx) {
       const q = ui.search.trim().toLowerCase();
-      const list = monthTx
-        .filter((t) => !ui.cat || t.categoryId === ui.cat)
+      const reviewing = ui.cat === REVIEW;
+      const reviewCount = txs.filter((t) => t.needsReview).length;
+      const list = (reviewing ? txs.filter((t) => t.needsReview) : monthTx)
+        .filter((t) => reviewing || !ui.cat || t.categoryId === ui.cat)
         .filter((t) => {
           if (!q) return true;
           const c = catById.get(t.categoryId);
@@ -231,9 +278,11 @@ export default {
           <input type="search" class="input" placeholder="Search notes, categories, amounts" value="${esc(ui.search)}" data-focus-key="search" data-input="search" aria-label="Search transactions">
           <select class="input" data-input="cat" aria-label="Filter by category">
             <option value="">All categories</option>
+            ${reviewCount || reviewing ? `<option value="${REVIEW}" ${reviewing ? 'selected' : ''}>⚠ Needs review (${reviewCount}, all months)</option>` : ''}
             ${cats.map((c) => `<option value="${esc(c.id)}" ${ui.cat === c.id ? 'selected' : ''}>${esc(c.icon)} ${esc(c.name)}</option>`).join('')}
           </select>
         </div>
+        ${reviewing && list.length ? '<p class="small summary-line">Tap each one and pick a category. Tick “always” to teach the sync for next time.</p>' : ''}
         <p class="muted small summary-line">${list.length} transaction${list.length === 1 ? '' : 's'} · Spent ${money(spent)} · Income ${money(income)}</p>
         ${list.length ? [...byDay].map(([day, items]) => `
           <section class="day">
@@ -249,11 +298,12 @@ export default {
       const isIncome = t.type === 'income';
       const isRefund = !isIncome && t.amount < 0;
       const sub = [t.note ? c?.name || 'Uncategorized' : '', isRefund ? 'Refund' : '', t.account || ''].filter(Boolean).join(' · ');
+      const badge = t.needsReview ? '<span class="badge warn">Review</span> ' : '';
       return `
         <button class="row" data-action="edit-tx" data-id="${esc(t.id)}">
           <span class="cat-icon" aria-hidden="true">${esc(c?.icon || '❔')}</span>
           <span class="row-main">
-            <span class="row-title">${esc(t.note || c?.name || 'Uncategorized')}</span>
+            <span class="row-title">${badge}${esc(t.note || c?.name || 'Uncategorized')}</span>
             ${sub ? `<span class="row-sub">${esc(sub)}</span>` : ''}
           </span>
           <span class="row-amt ${isIncome || isRefund ? 'pos' : ''}">${isIncome || isRefund ? '+' : '−'}${money(Math.abs(t.amount))}</span>
@@ -296,6 +346,8 @@ export default {
       const editing = !!tx;
       const type = tx?.type || 'expense';
       const defaultDate = ui.month === monthKey(new Date()) ? todayISO() : `${ui.month}-01`;
+      // Bank-sourced rows can create a merchant rule the sync applies from then on.
+      const suggested = editing && (tx.source === 'bank' || tx.source === 'import') ? suggestRule(tx.note) : '';
       const dlg = openModal(`
         <form class="form" novalidate>
           <h2>${editing ? 'Edit transaction' : 'Add transaction'}</h2>
@@ -311,6 +363,12 @@ export default {
           <label class="field"><span>Note <span class="muted">(optional)</span></span>
             <input class="input" name="note" maxlength="120" placeholder="e.g. Costco run" value="${esc(tx?.note || '')}">
           </label>
+          ${suggested ? `
+          <div class="rule-box">
+            <label class="check"><input type="checkbox" name="always" ${tx.needsReview ? 'checked' : ''}>
+              <span>Always use this category for bank transactions starting with</span></label>
+            <input class="input" name="ruleMatch" value="${esc(suggested)}" aria-label="Merchant name to match">
+          </div>` : ''}
           <p class="form-error" hidden></p>
           <div class="form-actions">
             ${editing ? '<button type="button" class="btn danger" data-m="delete">Delete</button>' : ''}
@@ -352,12 +410,34 @@ export default {
           note: form.note.value.trim(),
         };
         setPref(`lastCat:${data.type}`, data.categoryId);
-        if (editing) store.update('transactions', tx.id, data);
-        else store.add('transactions', { ...data, createdAt: Date.now(), createdBy: store.getState().user?.email || '' });
+        let extra = 0;
+        if (editing) {
+          store.update('transactions', tx.id, { ...data, needsReview: false });
+          const rule = suggested && form.always?.checked ? merchantKey(form.ruleMatch.value) : '';
+          if (rule) extra = saveRule(rule, data, tx.id);
+        } else {
+          store.add('transactions', { ...data, createdAt: Date.now(), createdBy: store.getState().user?.email || '' });
+        }
         closeModal();
-        toast(editing ? 'Saved' : 'Added');
-        if (!data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); draw(); }
+        toast(extra ? `Saved, plus ${extra} more like it` : editing ? 'Saved' : 'Added');
+        if (!editing && !data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); draw(); }
       };
+    }
+
+    // Remember merchant -> category, and apply it to other rows from that merchant still awaiting review.
+    function saveRule(key, data, exceptId) {
+      const existing = rules.find((r) => r.match === key);
+      const rule = { match: key, categoryId: data.categoryId, type: data.type };
+      if (existing) store.update('rules', existing.id, rule);
+      else store.add('rules', rule);
+      const others = txs.filter((t) => t.id !== exceptId && t.needsReview && ruleMatches(key, t.note));
+      others.forEach((t) => store.update('transactions', t.id, {
+        categoryId: data.categoryId,
+        type: data.type,
+        amount: data.type === t.type ? t.amount : -t.amount,
+        needsReview: false,
+      }));
+      return others.length;
     }
 
     function catModal(cat) {
@@ -438,6 +518,7 @@ export default {
         case 'tab': ui.tab = b.dataset.tab; setPref('budgetTab', ui.tab); break;
         case 'filter-cat': ui.cat = id; ui.search = ''; ui.tab = 'transactions'; break;
         case 'clear-filter': ui.cat = ''; ui.search = ''; break;
+        case 'show-review': ui.cat = REVIEW; ui.search = ''; ui.tab = 'transactions'; break;
         case 'add-tx': return txModal(null);
         case 'edit-tx': return txModal(txs.find((t) => t.id === id));
         case 'add-cat': return catModal(null);

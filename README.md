@@ -71,6 +71,18 @@ Settings → Household → **Copy** the invite code and send it to them. They in
 
 ---
 
+## Automatic bank sync (SimpleFIN, $15/year)
+
+A GitHub Action ([bank-sync.yml](.github/workflows/bank-sync.yml)) runs 3× a day, pulls new transactions and
+balances from [SimpleFIN Bridge](https://beta-bridge.simplefin.org), and writes them into your household.
+Card payments and transfers between your own accounts are skipped; rows you already imported or typed in are
+linked instead of duplicated; merchants are categorized from your history and your "always" rules, and anything
+unknown lands in **Needs review**. Logs show counts only (the repo is public).
+
+One-time setup (from this folder): generate a Firebase key (Project settings → Service accounts →
+Generate new private key), then run `python tools/setup_bank_sync.py` and follow the prompts.
+Run it manually any time: GitHub → Actions → Bank sync → Run workflow.
+
 ## What's in the budget
 
 - **Overview:** income, spent, left to spend, and net for the month; a progress bar per category against its monthly budget (with a "today" marker showing how far through the month you are); 6‑month income vs. spending chart.
