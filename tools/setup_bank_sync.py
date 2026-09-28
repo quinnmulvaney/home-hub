@@ -95,7 +95,23 @@ def setup_firebase():
     return True
 
 
+def ensure_github_login():
+    """The token is single-use, so make sure we can store secrets *before* claiming it."""
+    if subprocess.run([GH, "auth", "status", "-h", "github.com"], capture_output=True).returncode == 0:
+        return True
+    print("\nFirst, log this window in to GitHub (one time).")
+    print("It will show a code: open https://github.com/login/device, enter the code, and click Authorize.\n")
+    subprocess.run([GH, "auth", "login", "-h", "github.com", "-p", "https", "--web", "--skip-ssh-key",
+                    "-s", "workflow"])
+    ok = subprocess.run([GH, "auth", "status", "-h", "github.com"], capture_output=True).returncode == 0
+    if not ok:
+        print("\nGitHub login didn't complete, so nothing was changed. Run this again to retry.")
+    return ok
+
+
 def main():
+    if not ensure_github_login():
+        return
     have = existing_secrets()
     print("\n== Step 1 of 2: SimpleFIN ==")
     if "SIMPLEFIN_ACCESS_URL" in have and input("  Already set up. Replace it? [y/N]: ").strip().lower() != "y":
