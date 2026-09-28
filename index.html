@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Home Hub</title>
+  <meta name="description" content="Household budget, calendar and lists — synced across devices.">
+  <meta name="theme-color" content="#2a78d6">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="nav" id="nav" aria-label="Main"></nav>
+    <main class="main">
+      <header class="topbar">
+        <h1 id="page-title">Home Hub</h1>
+        <button class="sync-pill" id="sync-pill" type="button" title="Sync status"></button>
+      </header>
+      <div id="view" class="view"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal" class="modal"></dialog>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
