@@ -5,6 +5,11 @@ on:
     - cron: "23 11,19,3 * * *"   # ~7am, 3pm, 11pm Eastern. SimpleFIN refreshes from the bank about once a day.
   workflow_dispatch:
     inputs:
+      mode:
+        description: "sync = pull from bank; audit = read-only data check"
+        type: choice
+        options: [sync, audit]
+        default: sync
       lookback_days:
         description: "Days of history to request"
         default: "30"
@@ -32,7 +37,16 @@ jobs:
 
       - run: pip install --quiet firebase-admin
 
+      - name: Audit data (read-only)
+        if: inputs.mode == 'audit'
+        run: python sync/audit.py
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          HOUSEHOLD_ID: ${{ vars.HOUSEHOLD_ID }}
+          AUDIT_EXPECTED: ${{ secrets.AUDIT_EXPECTED }}
+
       - name: Sync transactions
+        if: inputs.mode != 'audit'
         run: python sync/bank_sync.py
         env:
           SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
