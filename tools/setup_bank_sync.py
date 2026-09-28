@@ -47,7 +47,9 @@ def setup_simplefin():
     if not claim_url.startswith("https://") or "/claim/" not in claim_url:
         print("  That doesn't look like a SimpleFIN setup token. Copy it again from SimpleFIN.")
         return False
-    req = urllib.request.Request(claim_url, data=b"", method="POST", headers={"Content-Length": "0"})
+    # SimpleFIN rejects Python's default User-Agent with a 403, so send our own.
+    req = urllib.request.Request(claim_url, data=b"", method="POST",
+                                 headers={"Content-Length": "0", "User-Agent": "home-hub-setup/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             access_url = r.read().decode().strip()
