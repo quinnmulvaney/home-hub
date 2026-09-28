@@ -1,5 +1,6 @@
 import * as store from '../store.js';
 import { esc, pref, setPref, toast, download, todayISO } from '../util.js';
+import { importCSVFile } from '../importer.js';
 
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'AUD', 'NZD', 'MXN', 'JPY', 'INR'];
 
@@ -29,6 +30,11 @@ export default {
               ${CURRENCIES.map((c) => `<option ${pref('currency', 'USD') === c ? 'selected' : ''}>${c}</option>`).join('')}
             </select>
           </label>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Import from your bank</h2></div>
+          <p class="muted small">Upload a CSV from Chase (Account activity → Download) or an export from another budgeting app. Transfers between your own accounts are skipped, and re-importing the same file never creates duplicates.</p>
+          <label class="btn primary">Import bank CSV<input type="file" accept=".csv,text/csv" data-input="bank-csv" hidden></label>
         </section>
         <section class="card">
           <div class="card-head"><h2>Backup</h2></div>
@@ -149,6 +155,12 @@ export default {
     root.addEventListener('change', async (e) => {
       const k = e.target.dataset.input;
       if (k === 'currency') { setPref('currency', e.target.value); toast(`Currency set to ${e.target.value}`); }
+      if (k === 'bank-csv') {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (file) importCSVFile(file).catch((err) => toast(err.message));
+        return;
+      }
       if (k === 'import') {
         const file = e.target.files[0];
         if (!file) return;

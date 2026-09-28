@@ -6,7 +6,7 @@ import {
 
 // Data model (both collections live under the household):
 //   categories:   { name, icon, type: 'expense'|'income', budget (monthly), order, archived }
-//   transactions: { date 'YYYY-MM-DD', amount (>0), type, categoryId, note, createdAt, createdBy }
+//   transactions: { date 'YYYY-MM-DD', amount (expense < 0 = refund), type, categoryId, note, account?, source?, createdAt, createdBy }
 store.registerCollections(['categories', 'transactions']);
 
 const DEFAULT_CATEGORIES = [
@@ -119,7 +119,7 @@ export default {
     }
 
     function budgetRow({ c, spent, budget }, pace) {
-      const pct = budget > 0 ? Math.min(spent / budget, 1) : 1;
+      const pct = budget > 0 ? Math.max(0, Math.min(spent / budget, 1)) : 1;
       const over = budget > 0 && spent > budget;
       const sub = budget <= 0 ? 'No budget set'
         : over ? `⚠ ${money(spent - budget)} over`
@@ -216,7 +216,7 @@ export default {
         .filter((t) => {
           if (!q) return true;
           const c = catById.get(t.categoryId);
-          return `${t.note || ''} ${c?.name || ''} ${t.amount}`.toLowerCase().includes(q);
+          return `${t.note || ''} ${c?.name || ''} ${t.account || ''} ${t.amount}`.toLowerCase().includes(q);
         })
         .sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
 
@@ -241,20 +241,22 @@ export default {
             <div class="card list">${items.map(txRow).join('')}</div>
           </section>`).join('')
         : `<div class="empty small"><p>No transactions${ui.cat || q ? ' match your filter' : ` in ${esc(monthLabel(ui.month, { month: 'long' }))}`}.</p>
-            ${ui.cat || q ? '<button class="btn" data-action="clear-filter">Clear filter</button>' : '<p class="muted">Tap <b>+</b> to add one.</p>'}</div>`}`;
+            ${ui.cat || q ? '<button class="btn" data-action="clear-filter">Clear filter</button>' : '<p class="muted">Tap <b>+</b> to add one, or import a bank CSV from <a href="#/settings">Settings</a>.</p>'}</div>`}`;
     }
 
     function txRow(t) {
       const c = catById.get(t.categoryId);
       const isIncome = t.type === 'income';
+      const isRefund = !isIncome && t.amount < 0;
+      const sub = [t.note ? c?.name || 'Uncategorized' : '', isRefund ? 'Refund' : '', t.account || ''].filter(Boolean).join(' · ');
       return `
         <button class="row" data-action="edit-tx" data-id="${esc(t.id)}">
           <span class="cat-icon" aria-hidden="true">${esc(c?.icon || '❔')}</span>
           <span class="row-main">
             <span class="row-title">${esc(t.note || c?.name || 'Uncategorized')}</span>
-            ${t.note ? `<span class="row-sub">${esc(c?.name || 'Uncategorized')}</span>` : ''}
+            ${sub ? `<span class="row-sub">${esc(sub)}</span>` : ''}
           </span>
-          <span class="row-amt ${isIncome ? 'pos' : ''}">${isIncome ? '+' : '−'}${money(t.amount)}</span>
+          <span class="row-amt ${isIncome || isRefund ? 'pos' : ''}">${isIncome || isRefund ? '+' : '−'}${money(Math.abs(t.amount))}</span>
         </button>`;
     }
 
@@ -340,7 +342,7 @@ export default {
         e.preventDefault();
         const amount = parseAmount(form.amount.value);
         const err = form.querySelector('.form-error');
-        if (!(amount > 0)) { err.textContent = 'Enter an amount greater than zero.'; err.hidden = false; form.amount.focus(); return; }
+        if (!amount) { err.textContent = 'Enter an amount (use a minus sign for a refund).'; err.hidden = false; form.amount.focus(); return; }
         if (!form.date.value) { err.textContent = 'Pick a date.'; err.hidden = false; return; }
         const data = {
           amount,
