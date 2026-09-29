@@ -6,7 +6,6 @@ import {
 import { billOccurrences, billStatus, upcomingBills, addDaysISO, daysBetweenISO, round2 } from '../stats.js';
 import { merchantKey } from '../merchant.js';
 import { subscribeRecent } from '../alerts.js';
-import { countdownHtml, startCountdown } from '../countdown.js';
 import { dayEvents, involves, freeWindows, fmtTime, toMin, fromMin, assigneesFor } from '../events.js';
 import { subscribePeople, roster, personById, me, initial, PERSON_COLORS } from '../people.js';
 import { logNotification } from '../notifications.js';
@@ -58,7 +57,6 @@ export default {
     el.appendChild(root);
 
     let bills = [], subs = [], cats = [], txs = [], settings = {}, calendars = [], events = [], tasks = [], notes = [], statuses = [];
-    let stopCountdown = () => {};
     const myId = () => store.meId();
 
     const activeBills = () => bills.filter((b) => b.active !== false);
@@ -73,16 +71,13 @@ export default {
     const TABS = [['calendar', 'Calendar'], ['todo', 'To-do'], ['notes', 'Notes'], ['free', 'Free time'], ['money', 'Money']];
 
     function draw() {
-      stopCountdown();
-      const wedding = settings.wedding?.date;
       const waiting = tasks.filter((t) => t.assignee === myId() && t.status === 'pending').length;
       renderKeepingFocus(root, `
-        ${wedding ? `<section class="card hero hero-compact"><div class="hero-eyebrow">💍 Our wedding</div>${countdownHtml(wedding)}</section>` : ''}
         <div class="tabs cal-tabs" role="tablist">
           ${TABS.map(([id, label]) => `<button role="tab" class="tab ${ui.tab === id ? 'active' : ''}" aria-selected="${ui.tab === id}" data-action="tab" data-tab="${id}">${label}${id === 'todo' && waiting ? ` <span class="badge warn">${waiting}</span>` : ''}${id === 'money' && changed().length ? ` <span class="badge warn">${changed().length}</span>` : ''}</button>`).join('')}
         </div>
         ${ui.tab === 'calendar' ? calendarTab() : ui.tab === 'todo' ? todoTab() : ui.tab === 'notes' ? notesTab() : ui.tab === 'free' ? freeTab() : moneyTab()}`);
-      stopCountdown = startCountdown(root);
+      renderTopStatus();
     }
 
     // =====================================================================
@@ -96,19 +91,42 @@ export default {
     }
     const tasksOn = (date) => tasks.filter((t) => t.due === date && (!ui.mineOnly || !t.assignee || t.assignee === myId()));
 
-    function statusStrip(date) {
-      const today = todayISO();
-      const list = roster().map((p) => ({ p, st: statuses.find((s) => s.uid === p.id && s.date === date) })).filter((x) => x.st);
-      const mine = statuses.find((s) => s.uid === myId() && s.date === date);
-      return `
-        <section class="card status-strip" aria-label="Who's doing what">
-          <div class="status-row">
-            ${list.length ? list.map(({ p, st }) => `<span class="status-chip" style="--pc:${esc(p.color || '#888')}"><b>${esc(initial(p))}</b>${st.emoji ? `<span aria-hidden="true">${esc(st.emoji)}</span>` : ''} ${esc(st.text)}</span>`).join('')
-              : `<span class="muted small">No status set for ${esc(dayName(date, today).toLowerCase())}.</span>`}
-            <button class="btn sm" data-action="set-status" data-date="${date}">${mine ? 'Change my status' : '＋ My status'}</button>
-          </div>
-        </section>`;
+    // ----- status (shown at the top of the screen, next to the bell) -----
+
+    // What someone is doing right now, worked out from the calendar: at work, likely driving (within 30 minutes of a
+    // work shift starting or ending), or the event happening at this moment.
+    function autoStatus(uid) {
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      let atWork = false, driving = false, current = null;
+      for (const it of dayEvents(events, calendars, todayISO())) {
+        if (!it.ev.start || (it.ev.done || {})[it.date] || !involves(it.assignees, it.cal, uid)) continue;
+        const st = toMin(it.ev.start);
+        const en = it.ev.end ? toMin(it.ev.end) : st + 60;
+        const work = !!it.cal?.hideFromDigest;
+        if (nowMin >= st && nowMin < en) { if (work) atWork = true; else current ||= it; }
+        else if (work && ((nowMin >= st - 30 && nowMin < st) || (nowMin >= en && nowMin < en + 30))) driving = true;
+      }
+      if (atWork) return { emoji: '💼', text: 'At work', auto: true };
+      if (driving) return { emoji: '🚗', text: 'Likely driving', auto: true };
+      if (current) return { emoji: current.cal?.icon || '📌', text: current.ev.title, auto: true };
+      return null;
     }
+    const statusOf = (uid) => statuses.find((x) => x.uid === uid && x.date === todayISO()) || autoStatus(uid);
+
+    const topBtn = document.createElement('button');
+    topBtn.className = 'top-status';
+    topBtn.type = 'button';
+    topBtn.setAttribute('data-status-btn', '');
+    topBtn.onclick = () => statusModal(todayISO());
+    document.querySelector('.top-actions')?.prepend(topBtn);
+    function renderTopStatus() {
+      const mine = statusOf(myId());
+      const partners = others().map((p) => ({ p, st: statusOf(p.id) })).filter((x) => x.st);
+      topBtn.innerHTML = `${mine ? `<span aria-hidden="true">${esc(mine.emoji || '💬')}</span><span class="ts-text">${esc(mine.text)}</span>` : '<span class="ts-text">＋ Status</span>'}${partners.map(({ p, st }) => `<span class="ts-partner" title="${esc(p.name)}: ${esc(st.text)}"><b style="background:${esc(p.color || '#888')}">${esc(initial(p))}</b>${esc(st.emoji || '')}</span>`).join('')}`;
+      topBtn.title = mine ? `My status: ${mine.text}${mine.auto ? ' (from the calendar)' : ''}` : 'Set my status';
+    }
+    const tick = setInterval(renderTopStatus, 60000);
 
     function filterBar() {
       const hide = hiddenSet();
@@ -134,8 +152,8 @@ export default {
     function calendarTab() {
       const today = todayISO();
       const sel = ui.selected || today;
-      if (!calendars.length) return `${statusStrip(sel)}${onboarding()}${billsOnlyGrid(sel)}`;
-      return `${statusStrip(sel)}${filterBar()}${monthCard(sel)}${agendaCard(sel)}`;
+      if (!calendars.length) return `${onboarding()}${billsOnlyGrid(sel)}`;
+      return `${filterBar()}${monthCard(sel)}${agendaCard(sel)}`;
     }
     const billsOnlyGrid = (sel) => (activeBills().length ? monthCard(sel) + agendaCard(sel) : '');
 
@@ -173,19 +191,19 @@ export default {
         const pills = [
           ...evs.map((it) => `<span class="cal-pill ev" style="--cc:${esc(it.cal?.color || '#888')}">${esc(it.ev.start ? `${fmtTime(it.ev.start).replace(/ ?[AP]M/i, '')} ` : '')}${esc(it.ev.title)}</span>`),
           ...bs.map((i) => `<span class="cal-pill ${i.status === 'paid' ? 'paid' : i.status === 'late' ? 'late' : i.status === 'auto' ? 'auto' : 'due'}">${esc(i.bill.name)}</span>`),
+          ...ts.map((t) => `<span class="cal-pill task">☐ ${esc(t.title)}</span>`),
         ];
         const total = evs.length + bs.length + ts.length;
         cells.push(`
           <button class="cal-day ${date === today ? 'today' : ''} ${date === sel ? 'selected' : ''} ${outside ? 'outside' : ''}" data-action="pick-day" data-date="${date}"
             aria-label="${esc(longDay(date))}${total ? `, ${plural(total, 'item')}` : ''}">
-            <span>${d}${wedDate === date ? ' 💍' : ''}</span>
-            <span class="cal-dots compact">${dots.slice(0, 5).join('')}</span>
-            ${pills.slice(0, 2).join('')}
-            ${pills.length > 2 ? `<span class="cal-pill">+${pills.length - 2} more</span>` : ''}
+            <span class="dn">${d}${wedDate === date ? '💍' : ''}</span>
+            ${pills.slice(0, 3).join('')}
+            ${pills.length > 3 ? `<span class="cal-pill more">+${pills.length - 3} more</span>` : ''}
           </button>`);
       }
       return `
-        <section class="card">
+        <section class="card cal-full">
           <div class="cal-head">
             <button class="icon-btn" data-action="prev-month" aria-label="Previous month">‹</button>
             <h2>${esc(monthLabel(ui.month))}</h2>
@@ -610,7 +628,7 @@ export default {
       const dlg = openModal(`
         <form class="form" novalidate>
           <h2>My status for ${esc(dayName(date, todayISO()).toLowerCase())}</h2>
-          <p class="muted small">A quick heads-up everyone can see at the top of the day. No calendar block needed.</p>
+          <p class="muted small">A quick heads-up everyone can see at the top of the screen. If you don't set one, it follows your calendar: what you're in right now, or “Likely driving” within 30 minutes of a work shift (for calendars marked as work).</p>
           <div class="cat-menu">${STATUS_PRESETS.map(([e, t]) => `<button type="button" class="cat-choice ${current?.text === t ? 'current' : ''}" data-emoji="${esc(e)}" data-text="${esc(t)}"><span aria-hidden="true">${esc(e)}</span><span>${esc(t)}</span></button>`).join('')}</div>
           <div class="field-row"><label class="field icon-field"><span>Icon</span><input class="input emoji-input" name="emoji" maxlength="4" value="${esc(current?.emoji || '')}"></label>
             <label class="field grow"><span>Or write your own</span><input class="input" name="text" maxlength="50" value="${esc(current?.text || '')}" placeholder="e.g. Dentist at 3"></label></div>
@@ -1096,6 +1114,6 @@ export default {
     ];
 
     draw();
-    return () => { stopCountdown(); unsubs.forEach((u) => u()); };
+    return () => { clearInterval(tick); topBtn.remove(); unsubs.forEach((u) => u()); };
   },
 };

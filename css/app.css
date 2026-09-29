@@ -1189,3 +1189,46 @@ textarea.input { resize: vertical; min-height: 60px; font-family: inherit; }
 .cal-day.outside.selected { opacity: .8; background: var(--accent-soft); }
 .picks.dim .pick { opacity: .55; }
 .cal-day { user-select: none; }
+
+/* ---------- calendar: the month grid is the focus ---------- */
+.cal-pill { display: block; font-size: 10px; line-height: 15px; padding: 0 3px; border-radius: 3px; overflow: hidden; text-overflow: clip; white-space: nowrap; background: var(--surface-2); }
+.cal-pill.auto { background: var(--accent-soft); color: var(--accent); }
+.cal-pill.due { background: var(--gold-soft); color: var(--gold-ink); }
+.cal-pill.paid { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.cal-pill.late { background: var(--bad-soft); color: var(--bad); }
+.cal-pill.ev { background: var(--cc); color: #fff; border-left: 0; border-radius: 3px; }
+.cal-pill.task { background: none; color: var(--muted); }
+.cal-pill.more { background: none; color: var(--muted); }
+.cal-dots.compact { display: none; }
+.cal-full .cal-grid { gap: 0; }
+.cal-full .cal-day { min-height: 90px; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; padding: 3px 1px; gap: 2px; font-size: 11px; }
+.cal-full .cal-day.outside { opacity: .45; }
+.cal-full .cal-day.today { box-shadow: none; }
+.cal-full .cal-day.selected { background: var(--accent-soft); opacity: 1; }
+.cal-full .cal-day .dn { text-align: center; font-size: 12px; width: 22px; height: 22px; line-height: 22px; margin: 0 auto; border-radius: 50%; }
+.cal-full .cal-day.today .dn { background: var(--accent); color: #fff; }
+.cal-full .cal-dow { padding: 4px 0; }
+@media (max-width: 699px) {
+  .cal-full { padding: 8px 0 6px; margin-inline: -8px; border-radius: 0; border-left: 0; border-right: 0; }
+  .cal-full .cal-head { padding: 0 12px; }
+  .cal-full .cal-legend { padding: 0 12px; }
+  .cal-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-bottom: 8px; }
+  .cal-filters::-webkit-scrollbar { display: none; }
+  .fchip { flex: none; padding: 5px 11px; font-size: 13px; }
+  .cal-tabs { margin-bottom: 8px; }
+}
+@media (min-width: 700px) { .cal-full .cal-day { min-height: 110px; } .cal-pill { font-size: 11px; } }
+
+/* status button in the top bar, next to the bell */
+.top-status { display: inline-flex; align-items: center; gap: 6px; max-width: 46vw; height: 34px; padding: 0 10px; border-radius: 999px; background: rgb(255 255 255 / .14); color: #fff; border: 1px solid rgb(255 255 255 / .38); font-size: 13px; }
+.top-status:hover { background: rgb(255 255 255 / .24); }
+.top-status .ts-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-status .ts-partner { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.top-status .ts-partner b { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; color: #fff; }
+@media (max-width: 520px) { .top-status .ts-text { max-width: 90px; } }
+@media (max-width: 520px) {
+  .topbar h1 { font-size: 20px; }
+  .top-actions { gap: 6px; min-width: 0; }
+  .top-status { max-width: 34vw; padding: 0 8px; gap: 4px; }
+  .top-status .ts-text { max-width: 64px; }
+}
