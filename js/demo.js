@@ -25,13 +25,13 @@ export function generateDemo(todayISO) {
   const pick = (list) => list[Math.floor(rnd() * list.length)];
   const now = new Date(`${todayISO}T12:00:00`);
   const stamp = Date.now();
-  const data = { categories: {}, transactions: {}, accounts: {}, goals: {}, contributions: {}, settings: {}, weddingItems: {}, bankSync: {} };
+  const data = { categories: {}, transactions: {}, accounts: {}, goals: {}, contributions: {}, settings: {}, weddingItems: {}, bankSync: {}, bills: {}, subscriptions: {}, notifications: {} };
   const put = (coll, id, doc) => { data[coll][id] = { ...doc, id, updatedAt: stamp }; };
 
   // ---- categories (with monthly budgets) ----
   const CATS = [
     ['inc_pay', 'Paycheck', '💵', 'income', 0], ['inc_other', 'Other income', '🎁', 'income', 0],
-    ['mortgage', 'Mortgage / Rent', '🏠', 'expense', 1850], ['utilities', 'Utilities', '💡', 'expense', 220],
+    ['mortgage', 'Mortgage / Rent', '🏠', 'expense', 1850], ['utilities', 'Utilities', '💡', 'expense', 310],
     ['groceries', 'Groceries', '🛒', 'expense', 650], ['dining', 'Dining out', '🍔', 'expense', 260],
     ['transport', 'Transportation', '🚗', 'expense', 300], ['insurance', 'Insurance', '🛡️', 'expense', 240],
     ['home', 'Home maintenance', '🔧', 'expense', 150], ['health', 'Health', '💊', 'expense', 120],
@@ -63,9 +63,11 @@ export function generateDemo(todayISO) {
     on(8, (s) => add(s, 'insurance', 238, 'Shield Insurance', CHECKING));
     on(10, (s) => add(s, 'utilities', between(92, 138), 'City Power & Light'));
     on(18, (s) => add(s, 'utilities', between(48, 70), 'Aqua Water Utility'));
+    on(4, (s) => add(s, 'utilities', 79.99, 'NetStream Internet'));
     on(5, (s) => add(s, 'subs', 15.49, 'StreamFlix'));
     on(9, (s) => add(s, 'subs', 10.99, 'TuneBox'));
     on(12, (s) => add(s, 'subs', 2.99, 'CloudDrive'));
+    on(11, (s) => add(s, 'subs', k === 0 ? 12.99 : 9.99, 'NewsToday Digital'));
     on(16, (s) => add(s, 'groceries', between(228, 262), 'Bulk Warehouse'));
     for (let i = 0; i < 6; i++) { const s = spread(); if (s) add(s, 'groceries', between(24, 96), pick(['Fresh Market', 'Corner Grocer', 'Green Basket'])); }
     for (let i = 0; i < 7; i++) { const s = spread(); if (s) add(s, 'dining', between(11, 46), pick(['Sunrise Café', 'Taco Corner', "Luigi's Kitchen", 'Noodle House'])); }
@@ -123,7 +125,37 @@ export function generateDemo(todayISO) {
   contrib('wedding', monthsAgo(3, 8), -4000, 'Paid Venue');
   contrib('wedding', monthsAgo(2, 8), -1000, 'Paid Photography & video');
 
+  // ---- bills (a mix of autopay and manual) ----
+  const dayOf = (d) => Math.min(d, 28);
+  const bill = (id, name, amount, day, autopay, match, extra = {}) =>
+    put('bills', id, { name, amount, freq: 'monthly', day: dayOf(day), startDate: '', autopay, remindDays: 3, categoryId: '', match, paid: {}, active: true, ...extra });
+  bill('bill1', 'Mortgage', 1850, 2, true, 'maple mortgage');
+  bill('bill2', 'Home insurance', 238, 8, true, 'shield insurance');
+  bill('bill3', 'Electric', 115, 10, false, 'city power');
+  bill('bill4', 'Water', 58, 18, false, 'aqua water');
+  bill('bill5', 'Internet', 79.99, Math.max(1, now.getDate() + 3 > 28 ? 5 : now.getDate() + 3), false, 'netstream');   // due in a few days: shows a reminder
+  bill('bill6', 'Car payment', 342.18, 24, true, 'autoloan');
+  bill('bill7', 'Trash service', 96, 1, false, 'green trash', { freq: 'yearly', day: 0, startDate: ahead(75) });
+
+  // ---- subscriptions the tracker "found" (one price just went up) ----
+  const sub = (id, key, name, amount, previous, changedOn, extra = {}) =>
+    put('subscriptions', id, { key, name, frequency: 'monthly', amount, previous, changedOn, lastDate: shift(3), nextDate: ahead(27), count: 6, monthly: amount, active: true, ignored: false,
+      runs: previous == null ? [{ amount, since: monthsAgo(5, 5) }] : [{ amount: previous, since: monthsAgo(5, 5) }, { amount, since: changedOn }], ...extra });
+  sub('sub1', 'streamflix', 'StreamFlix', 15.49, 13.99, monthsAgo(3, 5));
+  sub('sub2', 'tunebox', 'TuneBox', 10.99, null, '');
+  sub('sub3', 'clouddrive', 'CloudDrive', 2.99, null, '');
+  sub('sub4', 'newstoday digital', 'NewsToday Digital', 12.99, 9.99, shift(9), { lastDate: shift(9) });
+  sub('sub5', 'shield insurance', 'Shield Insurance', 238, 224, monthsAgo(4, 8), { lastDate: monthsAgo(0, 8) <= todayISO ? monthsAgo(0, 8) : monthsAgo(1, 8) });
+  sub('sub6', 'maple mortgage', 'Maple Mortgage Co.', 1850, null, '', { lastDate: monthsAgo(0, 2) <= todayISO ? monthsAgo(0, 2) : monthsAgo(1, 2) });
+
+  // ---- notification history (what the bell shows) ----
+  const note = (id, kind, title, body, hoursAgo, link = '#/budget') =>
+    put('notifications', id, { kind, title, body, link, quiet: false, ts: stamp - hoursAgo * 3600e3 });
+  note('n1', 'price', 'NewsToday Digital went up', 'From $9.99 to $12.99 a month', 5, '#/calendar');
+  note('n4', 'bill', 'Internet is due soon', 'Internet bill of $79.99 is coming up', 30, '#/calendar');
+  note('n5', 'weekly', 'Your week: $412.60 spent', '▼ 8% vs last week. Top: Groceries $168. Biggest: Bulk Warehouse $241', 52, '#/home');
+
   // ---- preferences ----
-  put('settings', 'budget', { income: 5300, alertAt: 0.8, alertsOn: true, bigOn: true, bigAmount: 250 });
+  put('settings', 'budget', { income: 5300, alertAt: 0.8, alertsOn: true, bigOn: true, bigAmount: 250, weeklyOn: true });
   return data;
 }

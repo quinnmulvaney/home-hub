@@ -3,6 +3,7 @@
 import * as store from './store.js';
 import { money, toast, pref, setPref, monthKey, addMonths, todayISO } from './util.js';
 import { spendByCategory, isFixedCost } from './stats.js';
+import { logNotification } from './notifications.js';
 
 export const DEFAULT_ALERT_AT = 0.8;
 const RANK = { near: 1, over: 2 };
@@ -57,8 +58,13 @@ export function notifyNew(alerts, month) {
     if ((RANK[a.level] || 0) > (RANK[seen.sent[a.id]] || 0)) { seen.sent[a.id] = a.level; fresh.push(a); }
   }
   setPref(memoryKey('alerted'), JSON.stringify(seen));
-  if (!baselined) { baselined = true; return []; }
+  const entry = (a, quiet) => logNotification({
+    id: `budget-${month}-${a.id}-${a.level}`, kind: a.level === 'over' ? 'over' : 'budget', quiet, link: '#/budget',
+    title: a.level === 'over' ? `${a.name} is over budget` : `${a.name} is nearing its limit`, body: alertMessage(a),
+  });
+  if (!baselined) { baselined = true; alerts.forEach((a) => entry(a, true)); return []; }   // first look: fill the bell quietly
   for (const a of fresh) {
+    entry(a, false);
     toast(`${a.level === 'over' ? '🚨' : '⚠️'} ${alertMessage(a)}`);
     // With push turned on, the server already notifies this device; don't double up.
     if (!pushOnThisDevice()) showSystemNotification(a.level === 'over' ? 'Over budget' : 'Nearing a budget limit', alertMessage(a), `budget-${a.id}`);
@@ -115,8 +121,10 @@ export function notifyBig(list) {
   try { seen = JSON.parse(pref(memoryKey('bigSeen'), '[]')); } catch { seen = []; }
   const fresh = list.filter((p) => !seen.includes(p.id));
   if (fresh.length) setPref(memoryKey('bigSeen'), JSON.stringify([...seen, ...fresh.map((p) => p.id)].slice(-300)));
-  if (!bigBaselined) { bigBaselined = true; return []; }
+  const entry = (p, quiet) => logNotification({ id: `big-${p.id}`, kind: 'big', quiet, link: '#/budget', title: 'Large purchase', body: bigMessage(p) });
+  if (!bigBaselined) { bigBaselined = true; list.forEach((p) => entry(p, true)); return []; }
   for (const p of fresh) {
+    entry(p, false);
     toast(`💳 Large purchase: ${bigMessage(p)}`);
     if (!pushOnThisDevice()) showSystemNotification('Large purchase', bigMessage(p), `big-${p.id}`);
   }

@@ -28,6 +28,8 @@ from zoneinfo import ZoneInfo
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 
+import insights
+
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or "America/New_York")
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 30)
 DRY_RUN = (os.environ.get("DRY_RUN") or "").lower() == "true"
@@ -139,57 +141,203 @@ def big_purchases(cats, all_tx, new_tx, prefs, today):
             and (t.get("date") or "") >= since and t.get("categoryId") not in skip]
 
 
-def send_alerts(hh, cats, all_tx, new_tx, today):
-    """Push notifications to every registered device: categories newly crossing their limit, and large purchases."""
+def send_alerts(hh, cats, all_tx, new_tx, today, db, now=None):
+    """Everything that can tell the user something: budget limits, large purchases, bills coming due, subscription
+    price changes and the Sunday summary. Each becomes an entry in the app's bell list (idempotent ids) and,
+    where it's news, a push notification to every registered device. Logs counts only (public repo)."""
     month = today[:7]
-    settings = hh.collection("settings").document("budget").get()
-    prefs = (settings.to_dict() or {}) if settings.exists else {}
-    notes = []  # (title, body, tag)
+    now = now or dt.datetime.now(TZ)
+    now_ms = int(time.time() * 1000)
+    prefs_snap = hh.collection("settings").document("budget").get()
+    prefs = (prefs_snap.to_dict() or {}) if prefs_snap.exists else {}
+    existing = {doc.id: (doc.to_dict() or {}) for doc in hh.collection("notifications").stream()}
+    entries = {}     # id -> doc for the bell
+    pushes = []      # (title, body, tag)
+    writes = []      # (collection, id, doc, merge)
+    state_updates = []   # (doc id under bankSync, dict)
 
-    state_ref = hh.collection("bankSync").document("alerts")
-    sent = {"month": month, "sent": {}}
+    def entry(eid, kind, title, body, link="#/budget", quiet=False):
+        if eid not in existing and eid not in entries:
+            entries[eid] = {"id": eid, "kind": kind, "title": title, "body": body, "link": link, "quiet": quiet, "ts": now_ms}
+
+    def section(label, fn):
+        try:
+            fn()
+        except Exception as e:  # one failing section must not stop the others
+            log(f"{label} failed: {type(e).__name__}")
+
+    # --- budget limits ---
+    budget_state = {"month": month, "sent": {}}
     fresh = []
-    if prefs.get("alertsOn") is False:
-        log("Budget alerts: turned off")
-    else:
-        alert_at = float(prefs.get("alertAt") or 0.8)
-        state = state_ref.get()
-        sent = (state.to_dict() or {}) if state.exists else {}
-        if sent.get("month") != month:
-            sent = {"month": month, "sent": {}}
-        fresh = [a for a in compute_alerts(cats, all_tx, month, alert_at)
-                 if ALERT_RANK[a[2]] > ALERT_RANK.get(sent["sent"].get(a[0]), 0)]
+
+    def budget_limits():
+        nonlocal budget_state, fresh
+        if prefs.get("alertsOn") is False:
+            log("Budget alerts: turned off")
+            return
+        st = hh.collection("bankSync").document("alerts").get()
+        budget_state = (st.to_dict() or {}) if st.exists else {}
+        if budget_state.get("month") != month:
+            budget_state = {"month": month, "sent": {}}
+        current = compute_alerts(cats, all_tx, month, float(prefs.get("alertAt") or 0.8))
+        fresh = [a for a in current if ALERT_RANK[a[2]] > ALERT_RANK.get(budget_state["sent"].get(a[0]), 0)]
         log(f"Budget alerts: {len(fresh)} new")
+        for a in current:
+            over = a[2] == "over"
+            entry(f"budget-{month}-{a[0]}-{a[2]}", "over" if over else "budget",
+                  f"{a[1]} is over budget" if over else f"{a[1]} is nearing its limit",
+                  f"${a[4] - a[5]:,.2f} over its ${a[5]:,.2f} budget" if over else f"At {round(a[3] * 100)}% of its ${a[5]:,.2f} budget, ${a[5] - a[4]:,.2f} left",
+                  quiet=a not in fresh)
 
         def line(a):
             return f"{a[1]} is over its budget" if a[2] == "over" else f"{a[1]} is at {round(a[3] * 100)}% of its budget"
         if len(fresh) == 1:
-            notes.append(("Over budget" if fresh[0][2] == "over" else "Nearing a budget limit", line(fresh[0]), "budget-alert"))
+            pushes.append(("Over budget" if fresh[0][2] == "over" else "Nearing a budget limit", line(fresh[0]), "budget-alert"))
         elif fresh:
-            notes.append((f"{len(fresh)} budget alerts", "; ".join(line(a) for a in fresh[:4]), "budget-alert"))
+            pushes.append((f"{len(fresh)} budget alerts", "; ".join(line(a) for a in fresh[:4]), "budget-alert"))
 
-    bigs = big_purchases(cats, all_tx, new_tx, prefs, today)
-    if prefs.get("bigOn") is True:
-        log(f"Large purchases: {len(bigs)} new")
+    section("Budget alerts", budget_limits)
 
-    def big_line(t):
-        label = t.get("note") or cats.get(t.get("categoryId"), {}).get("name") or "a purchase"
-        return f"${float(t['amount']):,.2f} at {label}"
-    if len(bigs) == 1:
-        notes.append(("Large purchase", big_line(bigs[0]), "big-purchase"))
-    elif bigs:
-        notes.append((f"{len(bigs)} large purchases", "; ".join(big_line(t) for t in bigs[:4]), "big-purchase"))
+    # --- large purchases ---
+    def large():
+        bigs = big_purchases(cats, all_tx, new_tx, prefs, today)
+        if prefs.get("bigOn") is True:
+            log(f"Large purchases: {len(bigs)} new")
 
-    if not notes:
+        def big_line(t):
+            label = t.get("note") or cats.get(t.get("categoryId"), {}).get("name") or "a purchase"
+            return f"${float(t['amount']):,.2f} at {label}"
+        for t in bigs:
+            entry(f"big-{t.get('id')}", "big", "Large purchase", big_line(t))
+        if len(bigs) == 1:
+            pushes.append(("Large purchase", big_line(bigs[0]), "big-purchase"))
+        elif bigs:
+            pushes.append((f"{len(bigs)} large purchases", "; ".join(big_line(t) for t in bigs[:4]), "big-purchase"))
+
+    section("Large purchases", large)
+
+    # --- bill reminders (autopay bills are skipped) ---
+    def bill_reminders():
+        bills = {doc.id: (doc.to_dict() or {}) for doc in hh.collection("bills").stream()}
+        rem = hh.collection("bankSync").document("reminders").get()
+        sent = dict(((rem.to_dict() or {}).get("sent") or {})) if rem.exists else {}
+        due_now = []
+        for bid, b in bills.items():
+            if b.get("active") is False or b.get("autopay"):
+                continue
+            ahead_days = int(b.get("remindDays") or 3)
+            for due in insights.bill_occurrences(b, today, insights.add_days(today, ahead_days)):
+                key = f"{bid}|{due}"
+                if key in sent or insights.bill_paid(b, due, all_tx):
+                    continue
+                n = (dt.date.fromisoformat(due) - dt.date.fromisoformat(today)).days
+                when = "today" if n == 0 else "tomorrow" if n == 1 else f"in {n} days"
+                amount = float(b.get("amount") or 0)
+                entry(f"bill-{bid}-{due}", "bill", f"{b.get('name', 'A bill')} is due {when}", f"${amount:,.2f} due {dt.date.fromisoformat(due).strftime('%A, %B %d').replace(' 0', ' ')}", "#/calendar")
+                due_now.append((b.get("name", "A bill"), when, amount))
+                sent[key] = today
+        log(f"Bill reminders: {len(due_now)}")
+        if len(due_now) == 1:
+            pushes.append(("Bill due " + due_now[0][1], f"{due_now[0][0]}: ${due_now[0][2]:,.2f}", "bill-reminder"))
+        elif due_now:
+            pushes.append((f"{len(due_now)} bills due soon", "; ".join(f"{n} {w}" for n, w, _ in due_now[:4]), "bill-reminder"))
+        if due_now:
+            state_updates.append(("reminders", {"sent": dict(sorted(sent.items(), key=lambda kv: kv[1])[-120:])}))
+
+    section("Bill reminders", bill_reminders)
+
+    # --- Sunday summary (after 3 pm local, once a week) ---
+    def weekly():
+        if prefs.get("weeklyOn") is False or now.weekday() != 6 or now.hour < 15:
+            return
+        ref = hh.collection("bankSync").document("weekly").get()
+        if ref.exists and (ref.to_dict() or {}).get("last") == today:
+            return
+        w = insights.week_summary(all_tx, cats, today)
+        if not w["count"]:
+            return
+        parts = []
+        if w["delta"] is not None:
+            change = f"${abs(w['spent'] - w['prev_spent']):,.0f}" if abs(w["delta"]) > 2 else f"{round(abs(w['delta']) * 100)}%"
+            parts.append(f"{'▲' if w['delta'] > 0 else '▼'} {change} vs last week")
+        if w["top"]:
+            parts.append(f"Top: {w['top'][0]} ${w['top'][1]:,.0f}")
+        if w["biggest"]:
+            parts.append(f"Biggest: {w['biggest'][0]} ${w['biggest'][1]:,.0f}")
+        title, body = f"Your week: ${w['spent']:,.2f} spent", ". ".join(parts)
+        entry(f"weekly-{today}", "weekly", title, body, "#/home")
+        pushes.append((title, body, "weekly-summary"))
+        state_updates.append(("weekly", {"last": today}))
+        log("Weekly summary: created")
+
+    section("Weekly summary", weekly)
+
+    # --- subscription tracker ---
+    def subscriptions():
+        old_docs = {doc.id: (doc.to_dict() or {}) for doc in hh.collection("subscriptions").stream()}
+        found = insights.detect_subscriptions(all_tx, cats, today)
+        seen, changes = set(), []
+        for sub in found:
+            sid = "sub_" + short_id(sub["key"])
+            seen.add(sid)
+            old = old_docs.get(sid, {})
+            doc = {**sub, "id": sid, "active": True, "ignored": bool(old.get("ignored")), "notifiedChange": old.get("notifiedChange", ""), "updatedAt": now_ms}
+            prev = sub["previous"]
+            meaningful = prev is not None and abs(sub["amount"] - prev) >= max(0.5, prev * 0.02)
+            recent = bool(sub["changedOn"]) and (dt.date.fromisoformat(today) - dt.date.fromisoformat(sub["changedOn"])).days <= 30
+            if meaningful and recent and old.get("notifiedChange") != sub["changedOn"]:
+                up = sub["amount"] > prev
+                title = f"{sub['name']} went {'up' if up else 'down'}"
+                body = f"From ${prev:,.2f} to ${sub['amount']:,.2f} ({sub['frequency']})"
+                entry(f"price-{sid}-{sub['changedOn']}", "price", title, body, "#/calendar")
+                changes.append((title, body))
+                doc["notifiedChange"] = sub["changedOn"]
+            writes.append(("subscriptions", sid, doc, False))
+        for sid, old in old_docs.items():
+            if sid not in seen and old.get("active") is not False:
+                writes.append(("subscriptions", sid, {"active": False}, True))
+        log(f"Subscriptions: {len(found)} tracked, {len(changes)} price change(s) to announce")
+        if len(changes) == 1:
+            pushes.append((changes[0][0], changes[0][1], "price-change"))
+        elif changes:
+            pushes.append((f"{len(changes)} subscription price changes", "; ".join(t for t, _ in changes[:3]), "price-change"))
+
+    section("Subscriptions", subscriptions)
+
+    # --- write bell entries, tidy old ones, then push ---
+    if DRY_RUN:
+        log(f"Dry run: {len(entries)} bell entries, {len(pushes)} push(es), {len(writes)} subscription writes NOT applied.")
         return
-    devices = [(d.id, (d.to_dict() or {}).get("token")) for d in hh.collection("devices").stream()]
+    cutoff = now_ms - 45 * 86400e3
+    batch = db.batch()
+    ops = 0
+    for eid, doc in entries.items():
+        batch.set(hh.collection("notifications").document(eid), doc)
+        ops += 1
+    for eid, old in existing.items():
+        if float(old.get("ts") or 0) < cutoff:
+            batch.delete(hh.collection("notifications").document(eid))
+            ops += 1
+    for coll, doc_id, doc, merge in writes:
+        batch.set(hh.collection(coll).document(doc_id), doc, merge=merge)
+        ops += 1
+        if ops >= 380:
+            batch.commit()
+            batch, ops = db.batch(), 0
+    for name, doc in state_updates:
+        batch.set(hh.collection("bankSync").document(name), doc, merge=True)
+    batch.commit()
+    log(f"Notifications logged: {len(entries)}")
+
+    if not pushes:
+        return
+    devices = [(dev.id, (dev.to_dict() or {}).get("token")) for dev in hh.collection("devices").stream()]
     devices = [(i, t) for i, t in devices if t]
-    if DRY_RUN or not devices:
-        log(f"Alert push skipped ({'dry run' if DRY_RUN else 'no devices registered'}).")
+    if not devices:
+        log("Alert push skipped (no devices registered).")
         return
-
     ok = failed = dead = 0
-    for title, body, tag in notes:
+    for title, body, tag in pushes:
         message = messaging.MulticastMessage(
             tokens=[t for _, t in devices],
             data={"title": title, "body": body, "url": "./#/budget", "tag": tag},
@@ -204,12 +352,12 @@ def send_alerts(hh, cats, all_tx, new_tx, today):
                 hh.collection("devices").document(doc_id).delete()
                 gone.add(doc_id)
         dead += len(gone)
-        devices = [d for d in devices if d[0] not in gone]
+        devices = [dv for dv in devices if dv[0] not in gone]
     if fresh:
         for a in fresh:
-            sent["sent"][a[0]] = a[2]
-        state_ref.set(sent)
-    log(f"Alert push: {len(notes)} notification(s); {ok} delivered, {failed} failed, {dead} device(s) removed.")
+            budget_state["sent"][a[0]] = a[2]
+        hh.collection("bankSync").document("alerts").set(budget_state)
+    log(f"Alert push: {len(pushes)} notification(s); {ok} delivered, {failed} failed, {dead} device(s) removed.")
 
 
 def fetch_simplefin(access_url, start):
@@ -412,7 +560,7 @@ def main():
         log(f"Dry run: {len(writes)} writes NOT applied.")
         try:
             new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
-            send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat())
+            send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat(), db)
         except Exception as e:
             log(f"Budget alerts failed: {type(e).__name__}")
         return
@@ -427,7 +575,7 @@ def main():
     # Spending-limit alerts. A failure here must never fail the sync itself.
     try:
         new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
-        send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat())
+        send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat(), db)
     except Exception as e:
         log(f"Budget alerts failed: {type(e).__name__}")
 

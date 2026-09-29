@@ -1,6 +1,6 @@
 import * as store from '../store.js';
 import {
-  esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, openModal, closeModal, toast, renderKeepingFocus,
+  esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, openModal, closeModal, toast, renderKeepingFocus, toastUndo, confirmDialog,
 } from '../util.js';
 import { weddingSummary, round2, sumBy, WEDDING_ID } from '../stats.js';
 import { lineChart, ring } from '../charts.js';
@@ -201,10 +201,11 @@ export default {
       form.querySelector('.emoji-grid').onclick = (e) => { const b = e.target.closest('[data-emoji]'); if (b) form.icon.value = b.dataset.emoji; };
       form.querySelector('[data-m=cancel]').onclick = closeModal;
       const del = form.querySelector('[data-m=delete]');
-      if (del) del.onclick = () => {
-        if (!confirm(`Delete “${item.name}”?`)) return;
+      if (del) del.onclick = async () => {
+        if (!(await confirmDialog({ title: `Delete “${item.name}”?`, body: 'It will be removed from your wedding plan.' }))) { itemModal(item); return; }
+        const copy = { ...item };
         store.remove('weddingItems', item.id);
-        closeModal();
+        toastUndo(`${copy.name} deleted`, () => store.put('weddingItems', copy.id, copy));
       };
       form.onsubmit = (e) => {
         e.preventDefault();

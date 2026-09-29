@@ -1,6 +1,6 @@
 import * as store from '../store.js';
-import { esc, money, todayISO, monthKey, monthLabel } from '../util.js';
-import { goalStatus, weddingSummary, spendByCategory, round2, sumBy } from '../stats.js';
+import { esc, money, todayISO, monthKey, monthLabel, parseAmount, toast, toastUndo, renderKeepingFocus } from '../util.js';
+import { goalStatus, weddingSummary, spendByCategory, round2, sumBy, upcomingBills, weekSummary, addDaysISO, daysBetweenISO } from '../stats.js';
 import { computeAlerts, alertMessage, computeBigPurchases, bigMessage, bigSettings, subscribeRecent, DEFAULT_ALERT_AT } from '../alerts.js';
 import { countdownHtml, startCountdown } from '../countdown.js';
 import { ring } from '../charts.js';
@@ -16,7 +16,8 @@ export default {
     root.className = 'home';
     el.appendChild(root);
 
-    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], recentTx = [], reviewTx = [];
+    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], recentTx = [], reviewTx = [], bills = [];
+    const quick = { amount: '', note: '' };   // survives redraws while you type
     let stopCountdown = () => {};
 
     function draw() {
@@ -35,8 +36,10 @@ export default {
       const today = todayISO();
       const dayPct = Number(today.slice(8, 10)) / new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0).getDate();
 
-      root.innerHTML = `
+      renderKeepingFocus(root, `
         ${heroCard(wedding)}
+        ${quickAddCard()}
+        ${upcomingCard()}
         <section class="card">
           <div class="card-head"><h2>${esc(monthLabel(month))}</h2><a class="link" href="#/budget">Open budget ›</a></div>
           ${budgeted > 0 ? `
@@ -61,8 +64,77 @@ export default {
             <a class="alert-row big" href="#/budget"><span>💳 Large purchase: ${esc(bigMessage(p))}</span><span class="review-go">View ›</span></a>`).join('')}</div>` : ''}
           ${reviewTx.length ? `<a class="review-banner" href="#/budget"><span>⚠ <b>${reviewTx.length}</b> bank transaction${reviewTx.length === 1 ? '' : 's'} need${reviewTx.length === 1 ? 's' : ''} a category</span><span class="review-go">Review ›</span></a>` : ''}
         </section>
-        ${goalsCard(wedding)}`;
+        ${weekCard()}
+        ${goalsCard(wedding)}`);
       stopCountdown = startCountdown(root);
+    }
+
+    // ---------- quick add ----------
+    function quickCats() {
+      const since = addDaysISO(todayISO(), -60);
+      const counts = {};
+      for (const t of recentTx) if (t.type !== 'income' && t.date >= since) counts[t.categoryId] = (counts[t.categoryId] || 0) + 1;
+      return cats.filter((c) => c.type === 'expense' && !c.archived)
+        .sort((a, b) => (counts[b.id] || 0) - (counts[a.id] || 0) || (a.order ?? 999) - (b.order ?? 999)).slice(0, 6);
+    }
+
+    function quickAddCard() {
+      const list = quickCats();
+      if (!list.length) return '';
+      return `
+        <section class="card quick">
+          <div class="card-head"><h2>Quick add</h2><a class="link" href="#/budget">Full form ›</a></div>
+          <div class="quick-row">
+            <div class="money-input"><span>$</span><input class="input amount" inputmode="decimal" placeholder="0.00" value="${esc(quick.amount)}" data-quick="amount" data-focus-key="quick-amount" aria-label="Amount"></div>
+            <input class="input" placeholder="What was it? (optional)" maxlength="60" value="${esc(quick.note)}" data-quick="note" data-focus-key="quick-note" aria-label="Note">
+          </div>
+          <div class="quick-cats" role="group" aria-label="Pick a category to save">
+            ${list.map((c) => `<button class="qcat" data-quick-cat="${esc(c.id)}"><span aria-hidden="true">${esc(c.icon || '📦')}</span>${esc(c.name)}</button>`).join('')}
+          </div>
+          <p class="muted small home-note">Type an amount, then tap a category to save it as today's expense.</p>
+        </section>`;
+    }
+
+    // ---------- bills coming up ----------
+    function upcomingCard() {
+      const live = bills.filter((b) => b.active !== false);
+      if (!live.length) return '';
+      const today = todayISO();
+      const items = upcomingBills(live, recentTx, today, 14, 7).slice(0, 5);
+      if (!items.length) return '';
+      const when = (due) => {
+        const n = daysBetweenISO(today, due);
+        return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : n > 1 ? `In ${n} days` : `${-n} day${n === -1 ? '' : 's'} ago`;
+      };
+      const text = { paid: 'Paid', auto: 'Autopay', late: 'Overdue', soon: 'Due soon', due: 'Upcoming' };
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Bills coming up</h2><a class="link" href="#/calendar">Calendar ›</a></div>
+          <div class="upcoming">${items.map((i) => `
+            <a class="bill" href="#/calendar" style="text-decoration:none;color:inherit">
+              <span class="bill-main"><span class="bill-name">${esc(i.bill.name)}</span><span class="small muted">${esc(when(i.due))}</span></span>
+              <span class="st ${i.status}">${text[i.status]}</span>
+              <span class="bill-amt">${money(i.bill.amount)}</span>
+            </a>`).join('')}</div>
+        </section>`;
+    }
+
+    // ---------- this week ----------
+    function weekCard() {
+      const w = weekSummary(recentTx, cats, todayISO());
+      if (!w.count && !w.prevSpent) return '';
+      const change = w.delta == null ? '' : Math.abs(w.delta) > 2 ? money(Math.abs(w.spent - w.prevSpent)) : `${Math.round(Math.abs(w.delta) * 100)}%`;
+      const delta = w.delta == null ? '' : `<span class="week-delta ${w.delta > 0 ? 'up' : 'down'}">${w.delta > 0 ? '▲' : '▼'} ${change}</span> vs last week`;
+      return `
+        <section class="card">
+          <div class="card-head"><h2>This week</h2><span class="muted small">Monday to today</span></div>
+          <div class="home-money">
+            <div><span class="muted small">Spent</span><b>${money(w.spent)}</b></div>
+            <div><span class="muted small">Last week (same days)</span><b>${money(w.prevSpent)}</b></div>
+            <div><span class="muted small">Purchases</span><b>${w.count}</b></div>
+          </div>
+          <p class="home-note small">${delta}${w.top ? `${delta ? ' · ' : ''}Top: <b>${esc(w.top.name)}</b> ${money(w.top.amount)}` : ''}${w.biggest ? ` · Biggest: <b>${esc(w.biggest.note)}</b> ${money(w.biggest.amount)}` : ''}</p>
+        </section>`;
     }
 
     function heroCard(wedding) {
@@ -124,6 +196,7 @@ export default {
 
     const unsubs = [
       store.subscribe('categories', (l) => { cats = l; draw(); }),
+      store.subscribe('bills', (l) => { bills = l; draw(); }),
       store.subscribe('settings', (l) => { settings = Object.fromEntries(l.map((d) => [d.id, d])); draw(); }),
       store.subscribe('goals', (l) => { goals = l; draw(); }),
       store.subscribe('contributions', (l) => { contribs = l; draw(); }),
@@ -132,6 +205,26 @@ export default {
       subscribeRecent((l) => { recentTx = l; monthTx = l.filter((t) => t.date?.startsWith(monthKey(new Date()))); draw(); }),
       store.subscribeWhere('transactions', [['needsReview', '==', true]], (l) => { reviewTx = l; draw(); }),
     ];
+
+    root.addEventListener('input', (e) => {
+      const k = e.target.dataset.quick;
+      if (k) quick[k] = e.target.value;
+    });
+    root.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-quick-cat]');
+      if (!b) return;
+      const amount = parseAmount(quick.amount);
+      if (!(amount > 0)) { toast('Type an amount first'); root.querySelector('[data-quick=amount]')?.focus(); return; }
+      const cat = cats.find((c) => c.id === b.dataset.quickCat);
+      const id = store.add('transactions', {
+        date: todayISO(), type: 'expense', amount, categoryId: b.dataset.quickCat, note: quick.note.trim(),
+        source: 'manual', createdAt: Date.now(), createdBy: store.getState().user?.email || '',
+      });
+      quick.amount = '';
+      quick.note = '';
+      draw();
+      toastUndo(`Added ${money(amount)} to ${cat?.name || 'category'}`, () => store.remove('transactions', id));
+    });
 
     draw();
     return () => { stopCountdown(); unsubs.forEach((u) => u()); };

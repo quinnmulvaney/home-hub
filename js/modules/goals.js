@@ -1,6 +1,6 @@
 import * as store from '../store.js';
 import {
-  esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, openModal, closeModal, toast, renderKeepingFocus,
+  esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, openModal, closeModal, toast, renderKeepingFocus, toastUndo, confirmDialog,
 } from '../util.js';
 import {
   averages, spendByCategory, roundUps, recurring, goalStatus, contributionStreak, underBudgetStreak, amortize,
@@ -382,12 +382,13 @@ export default {
       };
       form.querySelector('[data-m=cancel]').onclick = closeModal;
       const del = form.querySelector('[data-m=delete]');
-      if (del) del.onclick = () => {
-        if (!confirm(`Delete “${g.name}” and its history?`)) return;
-        contribs.filter((c) => c.goalId === g.id).forEach((c) => store.remove('contributions', c.id));
+      if (del) del.onclick = async () => {
+        if (!(await confirmDialog({ title: `Delete “${g.name}”?`, body: 'Its history goes with it.' }))) return;
+        const mine = contribs.filter((c) => c.goalId === g.id).map((c) => ({ ...c }));
+        mine.forEach((c) => store.remove('contributions', c.id));
+        const copy = { ...g };
         store.remove('goals', g.id);
-        closeModal();
-        toast('Goal deleted');
+        toastUndo('Goal deleted', () => { store.put('goals', copy.id, copy); mine.forEach((c) => store.put('contributions', c.id, c)); });
       };
       form.onsubmit = (e) => {
         e.preventDefault();
@@ -493,7 +494,14 @@ export default {
       dlg.querySelector('[data-m=edit]').onclick = () => { closeModal(); goalModal(g); };
       const addBtn = dlg.querySelector('[data-m=add]');
       if (addBtn) addBtn.onclick = () => { closeModal(); moneyModal({ goalId: id }); };
-      dlg.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { store.remove('contributions', b.dataset.del); closeModal(); toast('Removed'); }; });
+      dlg.querySelectorAll('[data-del]').forEach((b) => {
+        b.onclick = () => {
+          const doc = contribs.find((c) => c.id === b.dataset.del);
+          store.remove('contributions', b.dataset.del);
+          closeModal();
+          toastUndo('Entry removed', () => { if (doc) store.put('contributions', doc.id, { ...doc }); });
+        };
+      });
       const extra = dlg.querySelector('[data-extra]');
       if (extra) extra.oninput = () => {
         const e = parseAmount(extra.value) || 0;

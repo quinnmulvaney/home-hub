@@ -1,11 +1,12 @@
 import * as store from '../store.js';
 import {
   esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, dayLabel,
-  openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId, moneyCompact, amountsHidden,
+  openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId, moneyCompact, amountsHidden, toastUndo, confirmDialog,
 } from '../util.js';
 import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
 import { averages, spendByCategory, goalStatus, weddingSummary, round2, categoryInsight, reducibility } from '../stats.js';
 import { sortable } from '../sortable.js';
+import { swipe } from '../swipe.js';
 import { computeAlerts, alertMessage, computeBigPurchases, bigSkipReasons, bigMessage, bigSettings, DEFAULT_ALERT_AT } from '../alerts.js';
 
 // Data model (both collections live under the household):
@@ -525,6 +526,7 @@ export default {
             <div class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan-big-amount data-focus-key="plan-big" value="${bigAmount || ''}" placeholder="200" ${bigOn ? '' : 'disabled'}></div>
           </label>
           ${bigOn && bigSkipped.length ? `<p class="muted small">Skipped automatically because big purchases are normal there: <b>${bigSkipped.map(esc).join(', ')}</b>. Change this per category in its details.</p>` : ''}
+          <label class="check master-alert"><input type="checkbox" data-plan-weekly ${settings.budget?.weeklyOn !== false ? 'checked' : ''}><span><b>Weekly summary</b><br><span class="muted small">A Sunday notification with the week's spending, top category and biggest purchase.</span></span></label>
           <p class="muted small">You'll see a banner on Overview and a message when it happens. To also get alerts on your phone when the app is closed, turn on notifications in <a href="#/settings">Settings</a>.</p>
         </section>`;
     }
@@ -583,14 +585,61 @@ export default {
       const sub = [t.note ? c?.name || 'Uncategorized' : '', isRefund ? 'Refund' : '', t.account || ''].filter(Boolean).join(' · ');
       const badge = t.needsReview ? '<span class="badge warn">Review</span> ' : '';
       return `
-        <button class="row" data-action="edit-tx" data-id="${esc(t.id)}">
-          <span class="cat-icon" aria-hidden="true">${esc(c?.icon || '❔')}</span>
-          <span class="row-main">
-            <span class="row-title">${badge}${esc(t.note || c?.name || 'Uncategorized')}</span>
-            ${sub ? `<span class="row-sub">${esc(sub)}</span>` : ''}
-          </span>
-          <span class="row-amt ${isIncome || isRefund ? 'pos' : ''}">${isIncome || isRefund ? '+' : '−'}${money(Math.abs(t.amount))}</span>
-        </button>`;
+        <div class="swipe" data-id="${esc(t.id)}">
+          <div class="swipe-bg right" aria-hidden="true"><span>🏷️ Categorize</span></div>
+          <div class="swipe-bg left" aria-hidden="true"><span>Delete 🗑️</span></div>
+          <button class="row" data-action="edit-tx" data-id="${esc(t.id)}">
+            <span class="cat-icon" aria-hidden="true">${esc(c?.icon || '❔')}</span>
+            <span class="row-main">
+              <span class="row-title">${badge}${esc(t.note || c?.name || 'Uncategorized')}</span>
+              ${sub ? `<span class="row-sub">${esc(sub)}</span>` : ''}
+            </span>
+            <span class="row-amt ${isIncome || isRefund ? 'pos' : ''}">${isIncome || isRefund ? '+' : '−'}${money(Math.abs(t.amount))}</span>
+          </button>
+        </div>`;
+    }
+
+    // Delete a transaction: ask "are you sure?", then offer Undo from the bar at the bottom.
+    async function deleteTx(tx, reopenOnCancel = false) {
+      const ok = await confirmDialog({
+        title: 'Delete this transaction?',
+        body: `<b>${money(Math.abs(tx.amount))}</b> ${esc(tx.note || catById.get(tx.categoryId)?.name || '')}<br><span class="muted small">${esc(dayLabel(tx.date))}</span>`,
+      });
+      if (!ok) { if (reopenOnCancel) txModal(tx); return; }
+      const copy = { ...tx };
+      store.remove('transactions', tx.id);
+      toastUndo('Transaction deleted', () => store.put('transactions', copy.id, copy));
+    }
+
+    // Swipe right: pick a category from a menu.
+    function categorizeTx(tx) {
+      const options = cats.filter((c) => c.type === tx.type && !c.archived);
+      const suggested = tx.source === 'bank' || tx.source === 'import' ? suggestRule(tx.note) : '';
+      const dlg = openModal(`
+        <div class="form">
+          <h2>Categorize</h2>
+          <p class="tx-summary"><b>${esc(tx.note || 'Transaction')}</b> · ${money(Math.abs(tx.amount))} · ${esc(dayLabel(tx.date))}</p>
+          <div class="cat-menu">${options.map((c) => `
+            <button type="button" class="cat-choice ${c.id === tx.categoryId ? 'current' : ''}" data-id="${esc(c.id)}">
+              <span class="cat-icon" aria-hidden="true">${esc(c.icon || '📦')}</span><span>${esc(c.name)}</span>
+            </button>`).join('')}</div>
+          ${suggested ? `<label class="check"><input type="checkbox" data-always><span>Always use this category for “${esc(suggested)}”</span></label>` : ''}
+          <div class="form-actions"><span class="spacer"></span><button type="button" class="btn" data-m="cancel">Cancel</button></div>
+        </div>`);
+      dlg.querySelector('[data-m=cancel]').onclick = closeModal;
+      dlg.querySelectorAll('.cat-choice').forEach((b) => {
+        b.onclick = () => {
+          const categoryId = b.dataset.id;
+          const prev = { categoryId: tx.categoryId, needsReview: !!tx.needsReview };
+          store.update('transactions', tx.id, { categoryId, needsReview: false });
+          const always = suggested && dlg.querySelector('[data-always]').checked;
+          const extra = always ? saveRule(merchantKey(suggested), { categoryId, type: tx.type }, tx.id) : 0;
+          closeModal();
+          const name = catById.get(categoryId)?.name || 'that category';
+          if (always) toast(`Moved to ${name}${extra ? `, plus ${extra} more like it` : ''}. Future ones follow.`);
+          else toastUndo(`Moved to ${name}`, () => store.update('transactions', tx.id, prev));
+        };
+      });
     }
 
     // ---------- Categories ----------
@@ -674,12 +723,7 @@ export default {
       form.querySelectorAll('input[name=type]').forEach((r) => r.addEventListener('change', fillCats));
       form.querySelector('[data-m=cancel]').onclick = closeModal;
       const del = form.querySelector('[data-m=delete]');
-      if (del) del.onclick = () => {
-        if (!confirm('Delete this transaction?')) return;
-        store.remove('transactions', tx.id);
-        closeModal();
-        toast('Transaction deleted');
-      };
+      if (del) del.onclick = () => deleteTx(tx, true);
       form.onsubmit = (e) => {
         e.preventDefault();
         const amount = parseAmount(form.amount.value);
@@ -713,10 +757,10 @@ export default {
       let used = 0;
       try { used = await store.countWhere('transactions', [['categoryId', '==', c.id]]); } catch { used = 1; }
       if (!used) {
-        if (!confirm(`Delete “${c.name}”?`)) return;
+        if (!(await confirmDialog({ title: `Delete “${c.name}”?`, body: 'It has no transactions.' }))) { catDetail(c.id); return; }
+        const copy = { ...c };
         store.remove('categories', c.id);
-        closeModal();
-        toast(`${c.name} deleted`);
+        toastUndo(`${c.name} deleted`, () => store.put('categories', copy.id, copy));
         return;
       }
       const others = cats.filter((x) => x.id !== c.id && x.type === c.type && !x.archived);
@@ -742,14 +786,22 @@ export default {
         btn.disabled = true;
         btn.textContent = 'Deleting…';
         try {
+          let movedIds = [];
           if (form.to.value) {
             const docs = await store.fetchWhere('transactions', [['categoryId', '==', c.id]]);
-            await store.bulkUpdate('transactions', docs.map((t) => t.id), { categoryId: form.to.value });
+            movedIds = docs.map((t) => t.id);
+            await store.bulkUpdate('transactions', movedIds, { categoryId: form.to.value });
           }
-          rules.filter((r) => r.categoryId === c.id).forEach((r) => store.remove('rules', r.id));
+          const copy = { ...c };
+          const removedRules = rules.filter((r) => r.categoryId === c.id).map((r) => ({ ...r }));
+          removedRules.forEach((r) => store.remove('rules', r.id));
           store.remove('categories', c.id);
           closeModal();
-          toast(`${c.name} deleted${form.to.value ? `, ${used} moved to ${catById.get(form.to.value)?.name || 'another category'}` : ''}`);
+          toastUndo(`${c.name} deleted${form.to.value ? `, ${used} moved to ${catById.get(form.to.value)?.name || 'another category'}` : ''}`, async () => {
+            store.put('categories', copy.id, copy);
+            if (movedIds.length) await store.bulkUpdate('transactions', movedIds, { categoryId: c.id });
+            removedRules.forEach((r) => store.put('rules', r.id, r));
+          });
         } catch (err) {
           console.error(err);
           btn.disabled = false;
@@ -944,11 +996,11 @@ export default {
       };
       form.querySelector('[data-m=cancel]').onclick = closeModal;
       const del = form.querySelector('[data-m=delete]');
-      if (del) del.onclick = () => {
-        if (!confirm(`Delete “${cat.name}”?`)) return;
+      if (del) del.onclick = async () => {
+        if (!(await confirmDialog({ title: `Delete “${cat.name}”?`, body: 'It has no transactions.' }))) { catModal(cat); return; }
+        const copy = { ...cat };
         store.remove('categories', cat.id);
-        closeModal();
-        toast('Category deleted');
+        toastUndo('Category deleted', () => store.put('categories', copy.id, copy));
       };
       const arch = form.querySelector('[data-m=archive]');
       if (arch) arch.onclick = () => {
@@ -1044,6 +1096,9 @@ export default {
         if (!(v >= 0)) { toast('Enter a number'); return; }
         holdRedraw();
         saveSetting('budget', { income: v });
+      } else if (t.dataset.planWeekly !== undefined) {
+        saveSetting('budget', { weeklyOn: t.checked });
+        toast(t.checked ? 'Weekly summary on' : 'Weekly summary off');
       } else if (t.dataset.planBigOn !== undefined) {
         saveSetting('budget', { bigOn: t.checked, bigAmount: Number(settings.budget?.bigAmount) || 200 });
         toast(t.checked ? 'Large purchase alerts on' : 'Large purchase alerts off');
@@ -1104,6 +1159,12 @@ export default {
     root.addEventListener('pointerleave', () => {
       root.querySelectorAll('.tooltip').forEach((t) => { t.hidden = true; });
       root.querySelectorAll('.col.hover').forEach((c) => c.classList.remove('hover'));
+    });
+
+    swipe(root, {
+      item: '.swipe', surface: '.swipe .row',
+      onRight: (id) => { const tx = findTx(id); if (tx) categorizeTx(tx); },
+      onLeft: (id) => { const tx = findTx(id); if (tx) deleteTx(tx); },
     });
 
     sortable(root, {

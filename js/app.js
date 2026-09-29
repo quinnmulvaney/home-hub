@@ -1,6 +1,8 @@
 import * as store from './store.js';
 import { esc, applyAppearance, amountsHidden, setHideAmounts } from './util.js';
 import { startAlertMonitor } from './alerts.js';
+import { startBell } from './notifications.js';
+import calendar from './modules/calendar.js';
 import home from './modules/home.js';
 import budget from './modules/budget.js';
 import goals from './modules/goals.js';
@@ -15,7 +17,7 @@ const modules = [
   budget,
   goals,
   wedding,
-  placeholder('calendar', 'Calendar', '📅', 'Shared household calendar — bills due, appointments, chores.'),
+  calendar,
   placeholder('shopping', 'Shopping', '🛒', 'Shared shopping lists that tick off live on every phone.'),
   settings,
 ];
@@ -93,6 +95,7 @@ applyAppearance();
 await store.init();
 route();
 startAlertMonitor();
+startBell(document.getElementById('bell-btn'), document.getElementById('bell-badge'));
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e));

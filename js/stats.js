@@ -323,3 +323,104 @@ export function underBudgetStreak(txs, cats, today = todayISO()) {
 }
 
 export { monthKey };
+
+// ---------- bills ----------
+// bill: { name, amount, freq: 'monthly'|'weekly'|'biweekly'|'yearly', day (monthly), startDate (weekly/biweekly/yearly anchor),
+//         autopay, remindDays, match (merchant text), paid: { 'YYYY-MM-DD': true }, active }
+
+const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const addDaysISO = (iso, n) => { const d = parse(iso); d.setDate(d.getDate() + n); return isoOf(d); };
+
+// Every due date of `bill` from `from` to `to` (inclusive, ISO strings).
+export function billOccurrences(bill, from, to) {
+  const out = [];
+  const freq = bill.freq || 'monthly';
+  const lower = bill.startDate && freq === 'monthly' ? bill.startDate : '';
+  if (freq === 'monthly') {
+    const day = Number(bill.day) || Number((bill.startDate || '').slice(8, 10)) || 1;
+    const a = parse(from), b = parse(to);
+    let y = a.getFullYear(), m = a.getMonth();
+    while (y < b.getFullYear() || (y === b.getFullYear() && m <= b.getMonth())) {
+      const due = isoOf(new Date(y, m, Math.min(day, new Date(y, m + 1, 0).getDate())));
+      if (due >= from && due <= to && due >= lower) out.push(due);
+      m++;
+      if (m > 11) { m = 0; y++; }
+    }
+  } else if (freq === 'weekly' || freq === 'biweekly') {
+    const step = freq === 'weekly' ? 7 : 14;
+    const anchor = bill.startDate;
+    if (!anchor) return out;
+    let d = anchor;
+    if (d < from) d = addDaysISO(anchor, Math.ceil(daysBetweenISO(anchor, from) / step) * step);
+    for (; d <= to; d = addDaysISO(d, step)) if (d >= from) out.push(d);
+  } else if (freq === 'yearly') {
+    const anchor = bill.startDate;
+    if (!anchor) return out;
+    for (let y = Number(from.slice(0, 4)); y <= Number(to.slice(0, 4)); y++) {
+      const due = `${y}-${anchor.slice(5, 7)}-${anchor.slice(8, 10)}`;
+      if (due >= from && due <= to && due >= anchor) out.push(due);
+    }
+  }
+  return out;
+}
+
+// Has this occurrence been paid? Either marked by hand, or a matching purchase shows up near the due date.
+export function billPaid(bill, due, txs) {
+  if (bill.paid?.[due]) return true;
+  const key = merchantKey(bill.match || bill.name);
+  if (key.length < 3) return false;
+  const lo = addDaysISO(due, -5), hi = addDaysISO(due, 7);
+  const tol = Math.max(3, (Number(bill.amount) || 0) * 0.25);
+  return txs.some((t) => {
+    if (t.type === 'income' || !(t.amount > 0) || !t.date || t.date < lo || t.date > hi) return false;
+    const k = merchantKey(t.note);
+    return k.length >= 3 && (k.startsWith(key) || key.startsWith(k)) && Math.abs(t.amount - (Number(bill.amount) || 0)) <= tol;
+  });
+}
+
+// Status of one occurrence relative to today: 'paid' | 'late' | 'soon' | 'due' | 'auto'.
+export function billStatus(bill, due, txs, today = todayISO()) {
+  if (billPaid(bill, due, txs)) return 'paid';
+  if (bill.autopay) return 'auto';
+  if (due < today) return 'late';
+  return daysBetweenISO(today, due) <= (Number(bill.remindDays) || 3) ? 'soon' : 'due';
+}
+
+// ---------- weekly summary ----------
+// Monday-to-today against the same span last week (a full Monday–Sunday week when run on Sunday).
+export function weekSummary(txs, cats, today = todayISO()) {
+  const dow = (parse(today).getDay() + 6) % 7;          // Monday = 0
+  const start = addDaysISO(today, -dow);
+  const prevStart = addDaysISO(start, -7);
+  const prevEnd = addDaysISO(prevStart, dow);
+  const names = new Map(cats.map((c) => [c.id, c.name]));
+  const inRange = (t, a, b) => t.type !== 'income' && t.date >= a && t.date <= b;
+  const week = txs.filter((t) => inRange(t, start, today));
+  const prev = txs.filter((t) => inRange(t, prevStart, prevEnd));
+  const spent = sumBy(week), prevSpent = sumBy(prev);
+  const byCat = {};
+  for (const t of week) byCat[t.categoryId] = round2((byCat[t.categoryId] || 0) + t.amount);
+  const [topId, topAmt] = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0] || [];
+  const biggest = week.filter((t) => t.amount > 0).sort((a, b) => b.amount - a.amount)[0] || null;
+  return {
+    start, days: dow + 1, spent, prevSpent, count: week.length,
+    delta: prevSpent > 0 ? (spent - prevSpent) / prevSpent : null,
+    top: topId ? { name: names.get(topId) || 'Uncategorized', amount: topAmt } : null,
+    biggest: biggest ? { note: biggest.note || names.get(biggest.categoryId) || 'Purchase', amount: biggest.amount } : null,
+  };
+}
+
+// Occurrences worth showing on Home: a week back (unpaid ones flag as overdue) through `ahead` days.
+export function upcomingBills(bills, txs, today = todayISO(), ahead = 14, behind = 7) {
+  const from = addDaysISO(today, -behind), to = addDaysISO(today, ahead);
+  const out = [];
+  for (const b of bills) {
+    if (b.active === false) continue;
+    for (const due of billOccurrences(b, from, to)) {
+      const status = billStatus(b, due, txs, today);
+      if (due < today && (status === 'paid' || b.autopay)) continue;
+      out.push({ bill: b, due, status });
+    }
+  }
+  return out.sort((a, b) => a.due.localeCompare(b.due) || (b.bill.amount || 0) - (a.bill.amount || 0));
+}

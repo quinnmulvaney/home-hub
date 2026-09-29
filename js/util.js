@@ -161,3 +161,59 @@ export function applyAppearance() {
 try {
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (pref('mode', 'auto') === 'auto') applyAppearance(); });
 } catch { /* older browsers */ }
+
+// ---------- undo bar ----------
+// A bar that slides up from the bottom after a delete, offers Undo for a few seconds, then slides away.
+
+let undoTimer;
+export function toastUndo(message, onUndo, ms = 7000) {
+  const bar = document.getElementById('undo-bar');
+  if (!bar) { toast(message); return; }
+  bar.innerHTML = '<span class="undo-msg"></span><button type="button" class="undo-btn">Undo</button>';
+  bar.querySelector('.undo-msg').textContent = message;
+  const hide = () => bar.classList.remove('show');
+  bar.querySelector('.undo-btn').onclick = () => {
+    clearTimeout(undoTimer);
+    hide();
+    try { onUndo(); } catch (e) { console.error(e); }
+  };
+  bar.classList.add('show');
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(hide, ms);
+}
+
+// "Are you sure?" dialog. Resolves true only when the confirm button is pressed. `body` is HTML (escape user text first).
+export function confirmDialog({ title, body = '', confirmLabel = 'Delete', danger = true }) {
+  return new Promise((resolve) => {
+    const dlg = openModal(`
+      <div class="form">
+        <h2>${esc(title)}</h2>
+        <p>${body}</p>
+        <div class="form-actions"><span class="spacer"></span>
+          <button type="button" class="btn" data-c="no">Cancel</button>
+          <button type="button" class="btn ${danger ? 'danger' : 'primary'}" data-c="yes" autofocus>${esc(confirmLabel)}</button>
+        </div>
+      </div>`);
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      dlg.removeEventListener('close', onClose);
+      if (dlg.open) dlg.close();
+      resolve(v);
+    };
+    const onClose = () => finish(false);
+    dlg.addEventListener('close', onClose);
+    dlg.querySelector('[data-c=no]').onclick = () => finish(false);
+    dlg.querySelector('[data-c=yes]').onclick = () => finish(true);
+  });
+}
+
+export const relTime = (ms) => {
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
+  const days = Math.round(mins / 1440);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+};
