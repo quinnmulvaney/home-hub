@@ -79,6 +79,8 @@ def short_id(*parts):
 
 
 ALERT_RANK = {"near": 1, "over": 2}
+# Fixed bills (mortgage, rent, loans, insurance...) only alert when over budget; reaching it just means the bill was paid.
+FIXED_RE = re.compile(r"mortgage|rent|loan|insurance|tax|childcare|daycare|tuition|hoa|lease|student", re.I)
 
 
 def compute_alerts(cats, all_tx, month, alert_at):
@@ -93,8 +95,12 @@ def compute_alerts(cats, all_tx, month, alert_at):
         if c.get("type") != "expense" or c.get("archived") or c.get("alerts") is False or budget <= 0:
             continue
         pct = spent[cid] / budget
+        level = "over" if spent[cid] - budget > 0.004 else "near"
+        name = c.get("name", "Category")
+        if level == "near" and FIXED_RE.search(name) and "fee" not in name.lower():
+            continue
         if pct >= alert_at:
-            out.append((cid, c.get("name", "Category"), "over" if spent[cid] - budget > 0.004 else "near", pct, spent[cid], budget))
+            out.append((cid, name, level, pct, spent[cid], budget))
     return sorted(out, key=lambda a: -a[3])
 
 

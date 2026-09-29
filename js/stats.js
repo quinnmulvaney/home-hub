@@ -217,6 +217,8 @@ export function categoryInsight(list, months = 3, today = todayISO(), firstDate 
 }
 
 const FIXED_RE = /mortgage|\brent\b|loan|insurance|\btax|childcare|daycare|tuition|\bhoa\b|lease|student/i;
+// Bills that are paid once at a set amount (mortgage, rent, loans, insurance...). Reaching the budget just means the bill was paid.
+export const isFixedCost = (name) => FIXED_RE.test(name || '') && !/fee/i.test(name || '');
 const FLEX_RE = /dining|restaurant|coffee|takeout|entertain|subscript|shopping|personal|beauty|travel|vacation|hobb|gift|cloth|cash|fun\b|\bbar\b|other|misc/i;
 const ESSENTIAL_RE = /grocer|utilit|transport|\bgas\b|fuel|health|medical|pharm|home maint|phone|internet|electric|water|auto/i;
 

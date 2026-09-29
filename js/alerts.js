@@ -2,7 +2,7 @@
 // notifyNew shows a toast + system notification when a category crosses a threshold while the app is open.
 import * as store from './store.js';
 import { money, toast, pref, setPref, monthKey } from './util.js';
-import { spendByCategory } from './stats.js';
+import { spendByCategory, isFixedCost } from './stats.js';
 
 export const DEFAULT_ALERT_AT = 0.8;
 const RANK = { near: 1, over: 2 };
@@ -17,7 +17,10 @@ export function computeAlerts(cats, spentByCat, alertAt = DEFAULT_ALERT_AT, enab
     if (c.type !== 'expense' || c.archived || c.alerts === false || budget <= 0) continue;
     const spent = spentByCat[c.id] || 0;
     const pct = spent / budget;
-    if (pct >= alertAt) out.push({ id: c.id, name: c.name, icon: c.icon || '📦', spent, budget, pct, level: spent - budget > 0.004 ? 'over' : 'near' });
+    const level = spent - budget > 0.004 ? 'over' : 'near';
+    // A fixed bill reaching its budget just means it was paid, so only alert when it goes over.
+    if (level === 'near' && isFixedCost(c.name)) continue;
+    if (pct >= alertAt) out.push({ id: c.id, name: c.name, icon: c.icon || '📦', spent, budget, pct, level });
   }
   return out.sort((a, b) => b.pct - a.pct);
 }
