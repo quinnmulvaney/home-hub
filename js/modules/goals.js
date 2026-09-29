@@ -66,8 +66,8 @@ export default {
       const stats = new Map(list.map((g) => [g.id, goalStatus(g, contribs)]));
       renderKeepingFocus(root, `
         ${summaryCard(list, stats)}
-        <div class="goal-list">${list.map((g) => goalCard(g, stats.get(g.id))).join('')}</div>
         ${hasWedding() ? weddingCard() : ''}
+        <div class="goal-list">${list.map((g) => goalCard(g, stats.get(g.id))).join('')}</div>
         <div class="btn-row goal-add">
           <button class="btn primary" data-action="new-goal">+ New goal</button>
           ${hasWedding() ? '' : '<a class="btn" href="#/wedding">💍 Plan a wedding</a>'}

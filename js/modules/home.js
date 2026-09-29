@@ -88,7 +88,7 @@ export default {
       const items = list.map((g) => ({ name: g.name, icon: g.icon || '🎯', st: goalStatus(g, contribs) }));
       if (wedding.date || wItems.length) {
         const w = weddingSummary(wedding, wItems, contribs);
-        items.push({ name: 'Wedding fund', icon: '💍', st: { saved: Math.max(w.total - w.remaining, 0), target: w.total, pct: w.total > 0 ? Math.min(Math.max(1 - w.remaining / w.total, 0), 1) : 0, neededPerMonth: w.neededPerMonth, done: w.done } });
+        items.unshift({ name: 'Wedding fund', icon: '💍', st: { saved: Math.max(w.total - w.remaining, 0), target: w.total, pct: w.total > 0 ? Math.min(Math.max(1 - w.remaining / w.total, 0), 1) : 0, neededPerMonth: w.neededPerMonth, done: w.done } });
       }
       if (!items.length) {
         return `
