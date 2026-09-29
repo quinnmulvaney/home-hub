@@ -18,10 +18,17 @@ on:
         type: boolean
         default: false
 
+# Nothing here can change the repository. (The keep-alive job below is the only one that can, and it holds no secrets.)
 permissions:
-  contents: write   # only for the keep-alive commit below
+  contents: read
 
 concurrency: bank-sync
+
+# SECURITY NOTES
+# - This repo is public, and so are its workflow logs. Everything sensitive lives in encrypted secrets, which GitHub masks
+#   in logs. Never pass sensitive values through `vars.*` (repository variables are NOT masked).
+# - The scripts print counts only, never amounts, merchants, names or ids.
+# - Actions are pinned to full commit SHAs and the Python dependency to an exact version (supply-chain hygiene).
 
 jobs:
   sync:
@@ -29,20 +36,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5
         with:
           python-version: "3.12"
 
-      - run: pip install --quiet firebase-admin
+      - run: pip install --quiet firebase-admin==7.7.0
 
       - name: Audit data (read-only)
         if: inputs.mode == 'audit'
         run: python sync/audit.py
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          HOUSEHOLD_ID: ${{ vars.HOUSEHOLD_ID }}
+          HOUSEHOLD_ID: ${{ secrets.HOUSEHOLD_ID }}
           AUDIT_EXPECTED: ${{ secrets.AUDIT_EXPECTED }}
 
       - name: Inspect bank feed fields (names only)
@@ -57,11 +66,21 @@ jobs:
         env:
           SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          HOUSEHOLD_ID: ${{ vars.HOUSEHOLD_ID }}
+          HOUSEHOLD_ID: ${{ secrets.HOUSEHOLD_ID }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
 
-      # GitHub pauses scheduled workflows in repos with no activity for 60 days.
+  # GitHub pauses scheduled workflows in repos with no activity for 60 days. This job makes an empty commit when needed.
+  # It has write access but no secrets and runs no third-party packages.
+  keepalive:
+    if: github.repository == 'quinnmulvaney/home-hub' && github.event_name == 'schedule'
+    needs: sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
       - name: Keep schedule alive
         run: |
           if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt $(( 50 * 86400 )) ]; then
