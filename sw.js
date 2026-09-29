@@ -1,7 +1,7 @@
 // Offline support. App files: network-first (so updates show up right away),
 // falling back to cache when offline. Firebase SDK files: cache-first (URLs are versioned).
 // Firestore/Auth API traffic is never touched — the Firebase SDK handles its own offline cache.
-const CACHE = 'home-hub-v24';
+const CACHE = 'home-hub-v26';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/store.js', 'js/importer.js', 'js/merchant.js', 'js/util.js', 'js/firebase-config.js',
