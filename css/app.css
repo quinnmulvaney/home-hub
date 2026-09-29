@@ -1184,3 +1184,8 @@ body { font-size: calc(15px * var(--fs-scale, 1)); }
 .cal-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 textarea.input { resize: vertical; min-height: 60px; font-family: inherit; }
 @media (max-width: 480px) { .free-opts { grid-template-columns: 1fr 1fr; } .free-opts .field:first-child { grid-column: 1 / -1; } .task { align-items: flex-start; } }
+
+.cal-day.outside { opacity: .5; background: none; }
+.cal-day.outside.selected { opacity: .8; background: var(--accent-soft); }
+.picks.dim .pick { opacity: .55; }
+.cal-day { user-select: none; }

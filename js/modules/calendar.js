@@ -143,19 +143,25 @@ export default {
       const [y, m] = ui.month.split('-').map(Number);
       const days = new Date(y, m, 0).getDate();
       const startDow = new Date(y, m - 1, 1).getDay();
+      const gridDays = Math.ceil((startDow + days) / 7) * 7;
+      const isoOf = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      const gridFirst = isoOf(new Date(y, m - 1, 1 - startDow));
+      const gridLast = isoOf(new Date(y, m - 1, gridDays - startDow));
       const today = todayISO();
       const hide = hiddenSet();
       const billsByDay = {};
       if (!hide.has('bills')) {
         for (const b of activeBills()) {
-          for (const due of billOccurrences(b, `${ui.month}-01`, `${ui.month}-${String(days).padStart(2, '0')}`)) (billsByDay[due] ||= []).push({ bill: b, due, status: billStatus(b, due, txs, today) });
+          for (const due of billOccurrences(b, gridFirst, gridLast)) (billsByDay[due] ||= []).push({ bill: b, due, status: billStatus(b, due, txs, today) });
         }
       }
       const wedDate = settings.wedding?.date;
       const cells = [];
-      for (let i = 0; i < startDow; i++) cells.push('<span class="cal-day blank" aria-hidden="true"></span>');
-      for (let d = 1; d <= days; d++) {
-        const date = `${ui.month}-${String(d).padStart(2, '0')}`;
+      for (let i = 0; i < gridDays; i++) {
+        const cd = new Date(y, m - 1, 1 - startDow + i);
+        const date = isoOf(cd);
+        const d = cd.getDate();
+        const outside = cd.getMonth() !== m - 1;
         const evs = visibleFor(date);
         const bs = billsByDay[date] || [];
         const ts = tasksOn(date).filter((t) => t.status !== 'done');
@@ -170,7 +176,7 @@ export default {
         ];
         const total = evs.length + bs.length + ts.length;
         cells.push(`
-          <button class="cal-day ${date === today ? 'today' : ''} ${date === sel ? 'selected' : ''}" data-action="pick-day" data-date="${date}"
+          <button class="cal-day ${date === today ? 'today' : ''} ${date === sel ? 'selected' : ''} ${outside ? 'outside' : ''}" data-action="pick-day" data-date="${date}"
             aria-label="${esc(longDay(date))}${total ? `, ${plural(total, 'item')}` : ''}">
             <span>${d}${wedDate === date ? ' 💍' : ''}</span>
             <span class="cal-dots compact">${dots.slice(0, 5).join('')}</span>
@@ -548,7 +554,7 @@ export default {
           </div>
         </form>`);
       const form = dlg.querySelector('form');
-      form.everyone.onchange = () => { form.querySelector('[data-picks]').hidden = form.everyone.checked; };
+      form.everyone.onchange = () => { form.querySelector('[data-picks]').classList.toggle('dim', form.everyone.checked); };
       form.querySelector('[data-m=cancel]').onclick = () => manageCalsModal();
       const del = form.querySelector('[data-m=delete]');
       if (del) del.onclick = async () => {
@@ -652,6 +658,7 @@ export default {
           </div>
           <div class="field"><span>Who is it for?</span>
             <label class="check"><input type="checkbox" name="everyone" ${!e0.assignees?.length && !e0.rotation ? 'checked' : ''}><span>Everyone in the calendar</span></label>
+            ${participants.length < 2 ? '<p class="muted small">Your partner shows up here once they have opened the Calendar tab on their own device.</p>' : ''}
             <div class="picks" data-picks>${peopleChecks('who', e0.assignees || [], participants)}</div></div>
           <label class="field"><span>Repeats</span>
             <select class="input" name="repeat">${[['none', 'Doesn’t repeat'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']].map(([v, l]) => `<option value="${v}" ${e0.repeat === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -686,11 +693,14 @@ export default {
         form.querySelector('[data-repeat-opts]').hidden = rep === 'none';
         form.querySelector('[data-weekdays]').hidden = rep !== 'weekly';
         form.querySelector('[data-enddate]').hidden = rep !== 'none';
-        form.querySelector('[data-picks]').hidden = form.everyone.checked;
+        form.querySelector('[data-picks]').classList.toggle('dim', form.everyone.checked);
         form.querySelector('[data-rotation]').hidden = !form.rotate.checked;
         form.everyone.disabled = form.rotate.checked && rep !== 'none';
       };
       sync();
+      form.querySelector('[data-picks]').addEventListener('change', (ev2) => {
+        if (ev2.target.name === 'who' && ev2.target.checked && form.everyone.checked) { form.everyone.checked = false; sync(); }
+      });
       ['allday', 'repeat', 'everyone', 'rotate'].forEach((n) => form[n].addEventListener('change', sync));
       form.querySelector('[data-m=cancel]').onclick = closeModal;
       const del = form.querySelector('[data-m=delete]');
@@ -898,6 +908,11 @@ export default {
     // =====================================================================
     // Actions
     // =====================================================================
+
+    root.addEventListener('dblclick', (e) => {
+      const cell = e.target.closest('.cal-day[data-date]');
+      if (cell) { ui.selected = cell.dataset.date; eventModal(null, { date: cell.dataset.date }); }
+    });
 
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-action]');
