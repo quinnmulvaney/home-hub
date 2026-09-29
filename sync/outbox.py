@@ -55,9 +55,41 @@ def push(hh, devices, title, body, link="./#/calendar", tag="homehub"):
     return response.success_count
 
 
+COLORS = ["#4f7396", "#0f7f5f", "#b58a2a", "#a4576b", "#6a5bb5", "#dd6b3a", "#3f7d6d", "#5f7280"]
+
+
+def seed_people(hh):
+    """Make sure every household member has a profile, so they show up in the calendar's pickers even before they have
+    opened the Calendar tab themselves. Names come from their Google account. Returns how many were created."""
+    from firebase_admin import auth
+    members = (hh.get().to_dict() or {}).get("members") or []
+    existing = {p.id for p in hh.collection("people").stream()}
+    made = 0
+    for uid in members:
+        if uid in existing:
+            continue
+        try:
+            user = auth.get_user(uid)
+        except Exception:
+            continue
+        name = (user.display_name or (user.email or "").split("@")[0] or "Partner").split(" ")[0]
+        if not DRY_RUN:
+            hh.collection("people").document(uid).set(
+                {"name": name, "color": COLORS[(len(existing) + made) % len(COLORS)], "createdAt": int(time.time() * 1000), "digest": True, "seeded": True})
+        made += 1
+    return made
+
+
 def run(hh, now):
     today = now.date().isoformat()
     delivered = 0
+
+    try:
+        made = seed_people(hh)
+        if made:
+            log(f"Profiles created for {made} household member(s)")
+    except Exception as e:
+        log(f"Profile check skipped: {type(e).__name__}")
 
     # 1) queued pushes (task hand-offs)
     queued = list(hh.collection("outbox").stream())
