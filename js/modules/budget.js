@@ -24,7 +24,18 @@ const EMOJI = ['🏠', '💡', '💧', '🔥', '📶', '🛒', '🍔', '☕', '�
   '🐶', '👶', '🎓', '📺', '🎬', '🎮', '✈️', '🎁', '👕', '💇', '🏋️', '💳', '🏦', '💵', '📈', '📦'];
 
 // View state survives switching tabs/modules.
-const ui = { month: monthKey(new Date()), tab: pref('budgetTab', 'overview'), search: '', cat: '' };
+// period: 'month' (default) | 'year' | 'ytd' | 'last3' | 'last12' | 'all' | 'custom'
+const ui = {
+  month: monthKey(new Date()), period: 'month', year: String(new Date().getFullYear()), from: '', to: '',
+  tab: pref('budgetTab', 'overview'), search: '', cat: '',
+};
+const PERIODS = [['month', 'Month'], ['year', 'Year'], ['ytd', 'Year to date'], ['last3', 'Last 3 months'],
+  ['last12', 'Last 12 months'], ['all', 'All time'], ['custom', 'Custom range']];
+
+const lastDayOf = (m) => { const [y, mo] = m.split('-').map(Number); return `${m}-${String(new Date(y, mo, 0).getDate()).padStart(2, '0')}`; };
+const monthsBetween = (from, to) => (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7)) + 1;
+const daysBetween = (from, to) => Math.round((new Date(`${to}T12:00`) - new Date(`${from}T12:00`)) / 864e5) + 1;
+const shortDate = (iso) => new Date(`${iso}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 
 const REVIEW = '__review';
 const sum = (list) => Math.round(list.reduce((s, t) => s + (Number(t.amount) || 0), 0) * 100) / 100;
@@ -54,48 +65,92 @@ export default {
       store.subscribe('rules', (list) => { rules = list; }),
     ];
 
+    // The date range every view uses. `months` scales monthly budgets to the range.
+    function currentRange() {
+      const today = todayISO();
+      const nowMonth = monthKey(new Date());
+      switch (ui.period) {
+        case 'year':
+          return { from: `${ui.year}-01-01`, to: `${ui.year}-12-31`, label: ui.year, step: true, months: 12 };
+        case 'ytd':
+          return { from: `${today.slice(0, 4)}-01-01`, to: today, label: 'Year to date', months: Number(today.slice(5, 7)) };
+        case 'last3':
+          return { from: `${addMonths(nowMonth, -2)}-01`, to: today, label: 'Last 3 months', months: 3 };
+        case 'last12':
+          return { from: `${addMonths(nowMonth, -11)}-01`, to: today, label: 'Last 12 months', months: 12 };
+        case 'all': {
+          const dates = txs.map((t) => t.date).filter(Boolean).sort();
+          const from = dates[0] || today;
+          const to = dates.length && dates[dates.length - 1] > today ? dates[dates.length - 1] : today;
+          return { from, to, label: 'All time', months: monthsBetween(from, to) };
+        }
+        case 'custom': {
+          let from = ui.from || `${nowMonth}-01`;
+          let to = ui.to || today;
+          if (to < from) [from, to] = [to, from];
+          return { from, to, label: `${shortDate(from)} – ${shortDate(to)}`, months: Math.round(daysBetween(from, to) / 30.44 * 10) / 10 };
+        }
+        default:
+          return { from: `${ui.month}-01`, to: lastDayOf(ui.month), label: monthLabel(ui.month), step: true, months: 1 };
+      }
+    }
+
     function draw() {
-      const monthTx = txs.filter((t) => t.date?.startsWith(ui.month));
-      const body = ui.tab === 'transactions' ? transactionsTab(monthTx)
+      const range = currentRange();
+      const rangeTx = txs.filter((t) => t.date && t.date >= range.from && t.date <= range.to);
+      const body = ui.tab === 'transactions' ? transactionsTab(rangeTx, range)
         : ui.tab === 'categories' ? categoriesTab()
-        : overviewTab(monthTx);
+        : overviewTab(rangeTx, range);
+      const isHome = ui.period === 'month' && ui.month === monthKey(new Date());
       renderKeepingFocus(root, `
         <div class="toolbar">
-          <div class="month-bar">
-            <button class="icon-btn" data-action="prev-month" aria-label="Previous month">‹</button>
-            <button class="month-label" data-action="this-month" title="Jump to this month">${esc(monthLabel(ui.month))}</button>
-            <button class="icon-btn" data-action="next-month" aria-label="Next month">›</button>
+          <div class="period-row">
+            <select class="input period-select" data-input="period" aria-label="Time period">
+              ${PERIODS.map(([id, label]) => `<option value="${id}" ${ui.period === id ? 'selected' : ''}>${label}</option>`).join('')}
+            </select>
+            <div class="month-bar">
+              ${range.step ? '<button class="icon-btn" data-action="prev-period" aria-label="Previous">‹</button>' : ''}
+              ${range.step || ui.period === 'custom' ? `<button class="month-label" data-action="reset-period" title="${isHome ? '' : 'Back to this month'}">${esc(range.label)}</button>` : ''}
+              ${range.step ? '<button class="icon-btn" data-action="next-period" aria-label="Next">›</button>' : ''}
+            </div>
           </div>
           <div class="tabs" role="tablist">
             ${[['overview', 'Overview'], ['transactions', 'Transactions'], ['categories', 'Categories']].map(([id, label]) =>
               `<button role="tab" class="tab ${ui.tab === id ? 'active' : ''}" aria-selected="${ui.tab === id}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}
           </div>
         </div>
+        ${ui.period === 'custom' ? `
+          <div class="custom-range">
+            <label><span>From</span><input class="input" type="date" data-input="from" value="${esc(range.from)}"></label>
+            <label><span>To</span><input class="input" type="date" data-input="to" value="${esc(range.to)}"></label>
+          </div>` : ''}
         ${body}
         <button class="fab" data-action="add-tx" aria-label="Add transaction" title="Add transaction">+</button>`);
     }
 
     // ---------- Overview ----------
 
-    function overviewTab(monthTx) {
-      const income = sum(monthTx.filter((t) => t.type === 'income'));
-      const expenses = monthTx.filter((t) => t.type !== 'income');
+    function overviewTab(rangeTx, range) {
+      const income = sum(rangeTx.filter((t) => t.type === 'income'));
+      const expenses = rangeTx.filter((t) => t.type !== 'income');
       const spent = sum(expenses);
       const budgetCats = cats.filter((c) => c.type === 'expense' && !c.archived);
-      const totalBudget = budgetCats.reduce((s, c) => s + (Number(c.budget) || 0), 0);
+      const scale = range.months; // monthly budgets × number of months in the range
+      const totalBudget = budgetCats.reduce((s, c) => s + (Number(c.budget) || 0), 0) * scale;
       const left = totalBudget - spent;
 
       const rows = cats.filter((c) => c.type === 'expense').map((c) => {
         const catSpent = sum(expenses.filter((t) => t.categoryId === c.id));
-        return { c, spent: catSpent, budget: Number(c.budget) || 0 };
+        return { c, spent: catSpent, budget: (Number(c.budget) || 0) * scale };
       }).filter((r) => r.budget > 0 || r.spent > 0);
       const uncategorized = sum(expenses.filter((t) => !catById.has(t.categoryId)));
       if (uncategorized > 0) rows.push({ c: { id: '', name: 'Uncategorized', icon: '❔' }, spent: uncategorized, budget: 0 });
 
-      // "Pace" marker: how far through the month we are, only for the current month.
-      const now = new Date();
-      const isCurrent = ui.month === monthKey(now);
-      const pace = isCurrent ? now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() : null;
+      // "Pace" marker: how far through the month/year we are, when viewing the current one.
+      const today = todayISO();
+      const isCurrent = (ui.period === 'month' || ui.period === 'year') && today >= range.from && today <= range.to;
+      const pace = isCurrent ? daysBetween(range.from, today) / daysBetween(range.from, range.to) : null;
+      const inPeriod = ui.period === 'month' ? 'this month' : 'in this period';
 
       const reviewCount = txs.filter((t) => t.needsReview).length;
       return `
@@ -108,25 +163,24 @@ export default {
           ${tile('Income', money(income))}
           ${tile('Spent', money(spent))}
           ${totalBudget > 0
-            ? tile(left >= 0 ? 'Left to spend' : 'Over budget', money(Math.abs(left)), `of ${money(totalBudget)} budgeted`, left < 0 ? 'bad' : '')
+            ? tile(left >= 0 ? 'Left to spend' : 'Over budget', money(Math.abs(left)), `of ${money(totalBudget)} budgeted${scale !== 1 ? ` (${scale} mo)` : ''}`, left < 0 ? 'bad' : '')
             : tile('Left to spend', '—', 'Set budgets in Categories')}
-          ${tile('Net', money(income - spent, { sign: true }), income - spent >= 0 ? 'Saved this month' : 'More out than in')}
+          ${tile('Net', money(income - spent, { sign: true }), income - spent >= 0 ? `Saved ${inPeriod}` : 'More out than in')}
         </div>
 
         <section class="card">
           <div class="card-head">
             <h2>Spending by category</h2>
-            ${isCurrent ? '<span class="muted small" title="The line on each bar shows how far through the month we are">│ = today</span>' : ''}
+            ${isCurrent ? `<span class="muted small" title="The line on each bar shows how far through the ${ui.period === 'year' ? 'year' : 'month'} we are">│ = today</span>` : ''}
           </div>
           ${rows.length ? `<div class="budget-list">${rows.map((r) => budgetRow(r, pace)).join('')}</div>`
-            : `<p class="muted">No spending yet this month. Tap <b>+</b> to add a transaction${totalBudget ? '' : ', and set monthly budgets under <b>Categories</b>'}.</p>`}
+            : `<p class="muted">No spending ${inPeriod}. Tap <b>+</b> to add a transaction${totalBudget ? '' : ', and set monthly budgets under <b>Categories</b>'}.</p>`}
         </section>
 
         ${accountsCard()}
 
         <section class="card">
-          <div class="card-head"><h2>Last 6 months</h2></div>
-          ${trendChart()}
+          ${trendChart(range)}
         </section>`;
     }
 
@@ -186,8 +240,13 @@ export default {
         </button>`;
     }
 
-    function trendChart() {
-      const months = [-5, -4, -3, -2, -1, 0].map((d) => addMonths(ui.month, d));
+    function trendChart(range) {
+      // Short ranges: the 6 months ending with it. Longer ranges: every month in it (latest 24).
+      const endMonth = range.to.slice(0, 7);
+      const span = monthsBetween(range.from, range.to);
+      const count = span <= 6 ? 6 : Math.min(span, 24);
+      const months = Array.from({ length: count }, (_, i) => addMonths(endMonth, i - count + 1));
+      const highlight = ui.period === 'month' ? ui.month : '';
       const data = months.map((m) => {
         const mt = txs.filter((t) => t.date?.startsWith(m));
         return { m, income: sum(mt.filter((t) => t.type === 'income')), spent: sum(mt.filter((t) => t.type !== 'income')) };
@@ -213,12 +272,13 @@ export default {
             <rect class="col-bg" x="${L + groupW * i + 1}" y="${T}" width="${groupW - 2}" height="${plotH}" rx="4"/>
             ${barPath(cx - barW - 1, y(d.income), barW, T + plotH - y(d.income), 'income')}
             ${barPath(cx + 1, y(d.spent), barW, T + plotH - y(d.spent), 'spent')}
-            <text x="${cx}" y="${H - 6}" class="axis ${d.m === ui.month ? 'current' : ''}" text-anchor="middle">${esc(monthLabel(d.m, { month: 'short' }))}</text>
+            ${count <= 12 || i % 2 === (count - 1) % 2 ? `<text x="${cx}" y="${H - 6}" class="axis ${d.m === highlight ? 'current' : ''}" text-anchor="middle">${esc(monthLabel(d.m, d.m.endsWith('-01') && count > 6 ? { month: 'short', year: '2-digit' } : { month: 'short' }))}</text>` : ''}
             <rect class="hit" x="${L + groupW * i}" y="0" width="${groupW}" height="${H}"/>
           </g>`;
       }).join('');
 
       return `
+        <div class="card-head"><h2>${span <= 6 ? 'Last 6 months' : 'Month by month'}</h2></div>
         <div class="legend">
           <span><i class="sw income"></i>Income</span>
           <span><i class="sw spent"></i>Spent</span>
@@ -254,11 +314,11 @@ export default {
 
     // ---------- Transactions ----------
 
-    function transactionsTab(monthTx) {
+    function transactionsTab(rangeTx, range) {
       const q = ui.search.trim().toLowerCase();
       const reviewing = ui.cat === REVIEW;
       const reviewCount = txs.filter((t) => t.needsReview).length;
-      const list = (reviewing ? txs.filter((t) => t.needsReview) : monthTx)
+      const list = (reviewing ? txs.filter((t) => t.needsReview) : rangeTx)
         .filter((t) => reviewing || !ui.cat || t.categoryId === ui.cat)
         .filter((t) => {
           if (!q) return true;
@@ -289,7 +349,7 @@ export default {
             <h3 class="day-head"><span>${esc(dayLabel(day))}</span></h3>
             <div class="card list">${items.map(txRow).join('')}</div>
           </section>`).join('')
-        : `<div class="empty small"><p>No transactions${ui.cat || q ? ' match your filter' : ` in ${esc(monthLabel(ui.month, { month: 'long' }))}`}.</p>
+        : `<div class="empty small"><p>No transactions${ui.cat || q ? ' match your filter' : ` in ${ui.period === 'month' ? esc(monthLabel(ui.month, { month: 'long' })) : 'this period'}`}.</p>
             ${ui.cat || q ? '<button class="btn" data-action="clear-filter">Clear filter</button>' : '<p class="muted">Tap <b>+</b> to add one, or import a bank CSV from <a href="#/settings">Settings</a>.</p>'}</div>`}`;
     }
 
@@ -345,7 +405,8 @@ export default {
     function txModal(tx) {
       const editing = !!tx;
       const type = tx?.type || 'expense';
-      const defaultDate = ui.month === monthKey(new Date()) ? todayISO() : `${ui.month}-01`;
+      const range = currentRange();
+      const defaultDate = todayISO() >= range.from && todayISO() <= range.to ? todayISO() : range.from;
       // Bank-sourced rows can create a merchant rule the sync applies from then on.
       const suggested = editing && (tx.source === 'bank' || tx.source === 'import') ? suggestRule(tx.note) : '';
       const dlg = openModal(`
@@ -420,7 +481,7 @@ export default {
         }
         closeModal();
         toast(extra ? `Saved, plus ${extra} more like it` : editing ? 'Saved' : 'Added');
-        if (!editing && !data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); draw(); }
+        if (!editing && ui.period === 'month' && !data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); draw(); }
       };
     }
 
@@ -512,9 +573,14 @@ export default {
       if (!b) return;
       const id = b.dataset.id;
       switch (b.dataset.action) {
-        case 'prev-month': ui.month = addMonths(ui.month, -1); break;
-        case 'next-month': ui.month = addMonths(ui.month, 1); break;
-        case 'this-month': ui.month = monthKey(new Date()); break;
+        case 'prev-period':
+        case 'next-period': {
+          const d = b.dataset.action === 'prev-period' ? -1 : 1;
+          if (ui.period === 'year') ui.year = String(Number(ui.year) + d);
+          else ui.month = addMonths(ui.month, d);
+          break;
+        }
+        case 'reset-period': ui.period = 'month'; ui.month = monthKey(new Date()); break;
         case 'tab': ui.tab = b.dataset.tab; setPref('budgetTab', ui.tab); break;
         case 'filter-cat': ui.cat = id; ui.search = ''; ui.tab = 'transactions'; break;
         case 'clear-filter': ui.cat = ''; ui.search = ''; break;
@@ -532,6 +598,17 @@ export default {
       const k = e.target.dataset.input;
       if (k === 'search') { ui.search = e.target.value; draw(); }
       if (k === 'cat') { ui.cat = e.target.value; draw(); }
+      if (k === 'period') {
+        // Keep roughly the same place in time when switching period types.
+        const before = currentRange();
+        const thisYear = todayISO().slice(0, 4);
+        ui.period = e.target.value;
+        if (ui.period === 'year') ui.year = before.to.slice(0, 4) > thisYear ? thisYear : before.to.slice(0, 4);
+        if (ui.period === 'month') ui.month = before.to > todayISO() ? monthKey(new Date()) : before.to.slice(0, 7);
+        if (ui.period === 'custom') { ui.from = before.from; ui.to = before.to; }
+        draw();
+      }
+      if ((k === 'from' || k === 'to') && e.target.value) { ui[k] = e.target.value; draw(); }
     });
 
     // Chart hover / tap tooltip.
