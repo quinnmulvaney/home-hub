@@ -100,5 +100,8 @@ startPeople();
 startBell(document.getElementById('bell-btn'), document.getElementById('bell-badge'));
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // When a new version takes over, reload once so the page runs the new code (skipped on first install).
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) location.reload(); });
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e));
 }
