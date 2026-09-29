@@ -39,6 +39,7 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const shortDay = (iso) => new Date(`${iso}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const longDay = (iso) => new Date(`${iso}T12:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const shortDay = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 const dayName = (iso, today) => (iso === today ? 'Today' : iso === addDaysISO(today, 1) ? 'Tomorrow' : longDay(iso));
 
 const ui = {
@@ -565,7 +566,8 @@ export default {
           <label class="check"><input type="checkbox" name="work" ${c.hideFromDigest ? 'checked' : ''}><span><b>Leave out of my morning summary</b><br><span class="muted small">Handy for work schedules. It still shows on the calendar and counts as busy time.</span></span></label>
           <p class="form-error" hidden></p>
           <div class="form-actions">
-            ${editing ? '<button type="button" class="btn danger" data-m="delete">Delete</button>' : ''}
+            ${editing && e0.repeat && e0.repeat !== 'none' && prefill.occ ? `<button type="button" class="btn" data-m="skip">Skip ${esc(shortDay(prefill.occ))} only</button>` : ''}
+            ${editing ? `<button type="button" class="btn danger" data-m="delete">${e0.repeat && e0.repeat !== 'none' ? 'Delete all' : 'Delete'}</button>` : ''}
             <span class="spacer"></span>
             <button type="button" class="btn" data-m="cancel">Cancel</button>
             <button type="submit" class="btn primary">Save</button>
@@ -574,6 +576,13 @@ export default {
       const form = dlg.querySelector('form');
       form.everyone.onchange = () => { form.querySelector('[data-picks]').classList.toggle('dim', form.everyone.checked); };
       form.querySelector('[data-m=cancel]').onclick = () => manageCalsModal();
+      const skip = form.querySelector('[data-m=skip]');
+      if (skip) skip.onclick = () => {
+        const before = ev.exceptions || {};
+        store.update('events', ev.id, { exceptions: { ...before, [prefill.occ]: true } });
+        closeModal();
+        toastUndo(`Skipped ${shortDay(prefill.occ)}`, () => store.update('events', ev.id, { exceptions: { ...before, [prefill.occ]: false } }));
+      };
       const del = form.querySelector('[data-m=delete]');
       if (del) del.onclick = async () => {
         const mine = events.filter((e) => e.calendarId === cal.id);
@@ -955,7 +964,7 @@ export default {
         case 'new-cal': return calModal(null, TEMPLATES[Number(b.dataset.template)]);
         case 'set-status': return statusModal(date || todayISO());
         case 'add-event': return eventModal(null, { date });
-        case 'edit-event': return eventModal(events.find((x) => x.id === id));
+        case 'edit-event': return eventModal(events.find((x) => x.id === id), { occ: date });
         case 'add-task-on': return taskModal(null, { due: date });
         case 'toggle-done': {
           const ev = events.find((x) => x.id === id);
