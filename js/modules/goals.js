@@ -134,7 +134,7 @@ export default {
       const streak = contributionStreak(contribs, g.id);
       return `
         <article class="goal card ${st.done ? 'done' : ''}" data-id="${esc(g.id)}">
-          <button class="drag-handle goal-grip" data-focus-key="drag-${esc(g.id)}" aria-label="Reorder ${esc(g.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
+          <button class="drag-handle goal-grip" data-focus-key="drag-${esc(g.id)}" aria-label="Reorder ${esc(g.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder"></button>
           <button class="goal-main" data-action="open-goal" data-id="${esc(g.id)}">
             <span class="goal-head">
               <span class="cat-icon" aria-hidden="true">${esc(g.icon || TYPES[g.type]?.icon || '🎯')}</span>

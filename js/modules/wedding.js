@@ -128,7 +128,7 @@ export default {
       const overdue = i.dueDate && paid < cost && i.dueDate < todayISO();
       return `
         <div class="item" data-id="${esc(i.id)}">
-          <button class="drag-handle" data-focus-key="drag-${esc(i.id)}" aria-label="Reorder ${esc(i.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
+          <button class="drag-handle" data-focus-key="drag-${esc(i.id)}" aria-label="Reorder ${esc(i.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder"></button>
           <button class="item-main" data-action="edit-item" data-id="${esc(i.id)}">
             <span class="cat-icon" aria-hidden="true">${esc(i.icon || '✨')}</span>
             <span class="item-body">

@@ -474,7 +474,7 @@ export default {
           <div class="trims">${trims.map((x) => `
             <button class="trim-row" data-action="cat-detail" data-id="${esc(x.c.id)}">
               <span class="cat-icon" aria-hidden="true">${esc(x.c.icon || '📦')}</span>
-              <span class="plan-main"><span class="name">${esc(x.c.name)} <span class="tag ${x.red.level}">${esc(x.red.label)}</span></span>
+              <span class="plan-main"><span class="name"><span class="name-link">${esc(x.c.name)}</span> <span class="tag ${x.red.level}">${esc(x.red.label)}</span></span>
                 <span class="muted small">Averages ${money(x.ins.avg)}, try ${money(x.red.target)}</span></span>
               <span class="good trim-save">−${money(x.save)}</span>
             </button>`).join('')}</div>
@@ -483,7 +483,7 @@ export default {
 
         <section class="card">
           <div class="card-head"><h2>Monthly budgets</h2><span class="muted small">${money(budgeted)} total</span></div>
-          <p class="muted small">Drag <span aria-hidden="true">⋮⋮</span> to reorder. Tap a category to see its history and decide on an amount.</p>
+          <p class="muted small">Drag the <span class="grip-inline" aria-hidden="true"></span> handle to reorder. Tap an underlined category name to see its history and decide on an amount.</p>
           <div class="btn-row plan-tools">
             <button class="btn" data-action="plan-fill">Fill from my average</button>
             <button class="btn" data-action="plan-round">Round to $10</button>
@@ -495,13 +495,14 @@ export default {
               const b = Number(c.budget) || 0;
               return `
               <div class="plan-row" data-id="${esc(c.id)}">
-                <button class="drag-handle" data-focus-key="drag-${esc(c.id)}" aria-label="Reorder ${esc(c.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
+                <button class="drag-handle" data-focus-key="drag-${esc(c.id)}" aria-label="Reorder ${esc(c.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder"></button>
                 <button class="plan-open" data-action="cat-detail" data-id="${esc(c.id)}" aria-label="${esc(c.name)} spending details">
                   <span class="cat-icon" aria-hidden="true">${esc(c.icon || '📦')}</span>
                   <span class="plan-main">
-                    <span class="name">${esc(c.name)} ${ins.months ? `<span class="tag ${red.level}">${esc(red.label)}</span>` : ''}</span>
+                    <span class="name"><span class="name-link">${esc(c.name)}</span> ${ins.months ? `<span class="tag ${red.level}">${esc(red.label)}</span>` : ''}</span>
                     <span class="muted small">${ins.months && ins.avg > 0 ? `Avg ${money(ins.avg)} · High ${money(ins.high.total)} · Low ${money(ins.low.total)}` : 'No spending in the last 3 months'}</span>
                   </span>
+                  <span class="chev" aria-hidden="true">›</span>
                 </button>
                 <button class="bell ${c.alerts === false ? '' : 'on'}" data-action="toggle-alert" data-id="${esc(c.id)}" aria-pressed="${c.alerts !== false}" aria-label="Limit alerts for ${esc(c.name)}: ${c.alerts === false ? 'off' : 'on'}. Tap to switch." title="${c.alerts === false ? 'Alerts off' : 'Alerts on'}">${c.alerts === false ? '🔕' : '🔔'}</button>
                 <span class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan="${esc(c.id)}" data-focus-key="plan-${esc(c.id)}" value="${b || ''}" placeholder="0" aria-label="${esc(c.name)} monthly budget"></span>

@@ -642,3 +642,14 @@ details summary { cursor: pointer; color: var(--text-2); font-size: 14px; margin
 .sep { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .detail-big { margin-top: 12px; }
 .form-actions .btn.danger { border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
+
+/* Drag grip: two lines (looks draggable, not like a menu button) */
+.drag-handle { font-size: 0; letter-spacing: 0; }
+.drag-handle::before { content: ""; box-sizing: border-box; width: 18px; height: 8px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; border-radius: 1px; }
+.drag-handle { color: color-mix(in srgb, var(--muted) 85%, var(--text)); }
+.grip-inline { display: inline-block; box-sizing: border-box; width: 14px; height: 7px; border-top: 2px solid var(--muted); border-bottom: 2px solid var(--muted); vertical-align: 1px; margin: 0 2px; }
+
+/* Category names you can tap */
+.name-link { color: var(--accent); font-weight: 650; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.plan-open:hover .name-link, .trim-row:hover .name-link { text-decoration-color: var(--accent); }
+.chev { flex: none; color: var(--accent); font-size: 24px; line-height: 1; margin-left: 2px; }
