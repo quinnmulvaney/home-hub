@@ -888,7 +888,7 @@ export default {
             <div class="reduce-head"><span class="tag ${red.level}">${esc(red.label)}</span><b>Can this be reduced?</b></div>
             <p>${esc(red.blurb)}</p>
             ${red.cutPct > 0 && !red.small ? `<p class="reduce-save">Trimming about <b>${Math.round(red.cutPct * 100)}%</b> would free up <b>${money(red.cutAmount)}/month</b> (${money(red.cutAmount * 12)}/year).${goalLine}</p>` : ''}
-            ${red.reasons.length || red.tips.length ? `<ul class="tips">${[...red.reasons, ...red.tips].map((t) => `<li>${t.includes('<') ? t : esc(t)}</li>`).join('')}</ul>` : ''}
+            ${red.reasons.length || red.tips.length ? `<ul class="tips">${[...red.reasons, ...red.tips].map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
           </div>` : '<p class="muted">No spending in this category in the last 3 full months, so there’s nothing to base a budget on yet.</p>'}
 
           <label class="check detail-alert"><input type="checkbox" data-alert-toggle ${c.alerts === false ? '' : 'checked'}><span>Alert me when this nears its limit</span></label>

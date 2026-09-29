@@ -1,37 +1,68 @@
 rules_version = '2';
 // Paste this whole file into Firebase console → Firestore Database → Rules → Publish.
+//
+// Who can do what:
+//  - users/{uid}      only that signed-in user.
+//  - households/{id}  only its members can read or write anything inside it.
+//  - invites/{code}   short-lived, single-use codes that let ONE new person join a household. A code can be looked up
+//                     by someone who knows it, but nobody can list or guess them. The household id itself is NOT an
+//                     invite, so seeing it (in a URL, screenshot or log) grants nothing.
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() { return request.auth != null; }
+
+    function isMemberOf(hid) {
+      return signedIn() && request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    // OPTIONAL hardening: limit sign-in to specific Google accounts. Put your real addresses here in the console
+    // (not in this public repo), then add `&& allowedUser()` to signedIn() above.
+    // function allowedUser() { return request.auth.token.email_verified == true && request.auth.token.email in ['you@example.com', 'partner@example.com']; }
+
     // Each user's pointer to the household they belong to.
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Invite codes: created by a member, valid for a few days, deleted by the person who joins.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && isMemberOf(request.resource.data.householdId)
+        && request.resource.data.keys().hasOnly(['householdId', 'createdBy', 'expiresAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.expiresAt is number
+        && request.resource.data.expiresAt <= request.time.toMillis() + 4 * 24 * 60 * 60 * 1000;
+      allow update: if false;
+      allow delete: if signedIn() && isMemberOf(resource.data.householdId);
     }
 
     match /households/{hid} {
       function isMember() {
-        return request.auth != null && request.auth.uid in resource.data.members;
+        return signedIn() && request.auth.uid in resource.data.members;
       }
 
       allow read: if isMember();
 
       // Creating a household: you must be its only member.
-      allow create: if request.auth != null
-        && request.resource.data.members == [request.auth.uid];
+      allow create: if signedIn() && request.resource.data.members == [request.auth.uid];
 
-      // Members can edit (e.g. rename). Non-members holding the invite code
-      // may only add themselves to `members` and change nothing else.
+      // Members can edit (e.g. rename). A non-member can only add THEMSELVES, and only while presenting a valid,
+      // unexpired invite code for this exact household.
       allow update: if isMember() || (
-        request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+        signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'joinCode'])
         && request.resource.data.members.hasAll(resource.data.members)
         && request.resource.data.members.removeAll(resource.data.members).hasOnly([request.auth.uid])
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.joinCode)).data.householdId == hid
+        && get(/databases/$(database)/documents/invites/$(request.resource.data.joinCode)).data.expiresAt > request.time.toMillis()
       );
 
-      // Budget, calendar, shopping lists, ... — members only.
+      // Budget, calendar, goals, notifications, devices... members only.
       match /{collection}/{docId} {
-        allow read, write: if request.auth != null
-          && request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
+        allow read, write: if isMemberOf(hid);
       }
     }
   }

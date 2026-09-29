@@ -454,14 +454,33 @@ export async function renameHousehold(name) {
   await updateDoc(doc(fb.db, 'households', state.householdId), { name });
 }
 
-// Join someone else's household using its invite code (the household id).
+// Invites. A code is random, good for 3 days and works once. The household's own id is never shared, so seeing it
+// somewhere (a screenshot, a log) can't be used to get in.
+const INVITE_DAYS = 3;
+const inviteCode = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
+
+export async function createInvite() {
+  if (state.mode !== 'cloud') throw new Error('Sign in first.');
+  const { doc, setDoc } = fb.fs;
+  const code = inviteCode();
+  const expiresAt = Date.now() + INVITE_DAYS * 864e5;
+  await setDoc(doc(fb.db, 'invites', code), { householdId: state.householdId, createdBy: state.user.uid, expiresAt });
+  return { code, expiresAt };
+}
+
+// Join someone else's household with an invite code they created for you.
 export async function joinHousehold(code) {
-  code = code.trim();
-  const { doc, updateDoc, setDoc, arrayUnion } = fb.fs;
-  await updateDoc(doc(fb.db, 'households', code), { members: arrayUnion(state.user.uid) });
-  await setDoc(doc(fb.db, 'users', state.user.uid), { householdId: code }, { merge: true });
-  try { localStorage.setItem(`homehub:hid:${state.user.uid}`, code); } catch {}
-  enterHousehold(code);
+  code = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (code.length < 8) throw new Error('That doesn\'t look like an invite code.');
+  const { doc, getDoc, updateDoc, setDoc, deleteDoc, arrayUnion } = fb.fs;
+  const invite = await getDoc(doc(fb.db, 'invites', code));
+  if (!invite.exists() || !(invite.data().expiresAt > Date.now())) throw new Error('That invite code is invalid or has expired.');
+  const hid = invite.data().householdId;
+  await updateDoc(doc(fb.db, 'households', hid), { members: arrayUnion(state.user.uid), joinCode: code });
+  await setDoc(doc(fb.db, 'users', state.user.uid), { householdId: hid }, { merge: true });
+  try { await deleteDoc(doc(fb.db, 'invites', code)); } catch { /* it expires on its own */ }
+  try { localStorage.setItem(`homehub:hid:${state.user.uid}`, hid); } catch {}
+  enterHousehold(hid);
 }
 
 // ---------- push notifications (Firebase Cloud Messaging) ----------

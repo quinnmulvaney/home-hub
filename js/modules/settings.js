@@ -153,6 +153,8 @@ export default {
         </section>`;
     }
 
+    let lastInvite = null;   // the most recent invite created on this screen
+
     function householdCard(s) {
       const h = s.household;
       const members = h?.members?.length || 1;
@@ -162,10 +164,13 @@ export default {
           <label class="field"><span>Name</span>
             <div class="inline"><input class="input" data-field="hh-name" value="${esc(h?.name || '')}" maxlength="40"><button class="btn" data-action="rename">Save</button></div>
           </label>
-          <label class="field"><span>Invite code</span>
-            <div class="inline"><input class="input mono" readonly value="${esc(s.householdId)}"><button class="btn" data-action="copy-code">Copy</button></div>
-          </label>
-          <p class="muted small">Anyone who signs in and enters this code shares this household's data. Only share it with people in your home.</p>
+          <div class="field"><span>Invite someone</span>
+            ${lastInvite && lastInvite.expiresAt > Date.now() ? `
+              <div class="inline"><input class="input mono" readonly value="${esc(lastInvite.code)}" aria-label="Invite code"><button class="btn" data-action="copy-code">Copy</button></div>
+              <p class="muted small">Works once and expires ${esc(new Date(lastInvite.expiresAt).toLocaleDateString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' }))}. Send it privately, never post it.</p>`
+            : '<button class="btn" data-action="new-invite">Create an invite code</button>'}
+          </div>
+          <p class="muted small">Whoever signs in and enters a valid code joins this household and sees all its data. Codes are single-use and short-lived.</p>
           <details>
             <summary>Join a different household</summary>
             <div class="inline"><input class="input mono" data-field="join-code" placeholder="Paste invite code"><button class="btn" data-action="join">Join</button></div>
@@ -186,8 +191,14 @@ export default {
             if (name) { await store.renameHousehold(name); toast('Saved'); }
             break;
           }
+          case 'new-invite':
+            lastInvite = await store.createInvite();
+            lastSig = '';
+            draw(store.getState());
+            toast('Invite code created');
+            break;
           case 'copy-code':
-            await navigator.clipboard.writeText(store.getState().householdId);
+            await navigator.clipboard.writeText(lastInvite.code);
             toast('Invite code copied');
             break;
           case 'join': {
@@ -249,7 +260,7 @@ export default {
       } catch (err) {
         console.error(err);
         const msg = err.code === 'auth/popup-closed-by-user' ? 'Sign-in cancelled'
-          : err.code === 'permission-denied' || err.code === 'not-found' ? 'That invite code didn’t work'
+          : err.code === 'permission-denied' || err.code === 'not-found' ? 'That invite code didn’t work. Ask for a new one.'
           : err.message || String(err);
         toast(msg);
       }
