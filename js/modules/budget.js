@@ -505,7 +505,7 @@ export default {
                   <span class="chev" aria-hidden="true">›</span>
                 </button>
                 <button class="bell ${c.alerts === false ? '' : 'on'}" data-action="toggle-alert" data-id="${esc(c.id)}" aria-pressed="${c.alerts !== false}" aria-label="Limit alerts for ${esc(c.name)}: ${c.alerts === false ? 'off' : 'on'}. Tap to switch." title="${c.alerts === false ? 'Alerts off' : 'Alerts on'}">${c.alerts === false ? '🔕' : '🔔'}</button>
-                <span class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan="${esc(c.id)}" data-focus-key="plan-${esc(c.id)}" value="${b || ''}" placeholder="0" aria-label="${esc(c.name)} monthly budget"></span>
+                <span class="money-input"><span class="mi-label">Monthly budget</span><span>$</span><input class="input" inputmode="decimal" data-plan="${esc(c.id)}" data-focus-key="plan-${esc(c.id)}" value="${b || ''}" placeholder="0" aria-label="${esc(c.name)} monthly budget"></span>
               </div>`;
             }).join('')}
           </div>

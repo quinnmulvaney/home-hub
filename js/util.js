@@ -114,3 +114,31 @@ export function download(filename, text, type = 'application/json') {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ---------- appearance (saved per device) ----------
+
+export const PALETTES = [
+  { id: 'wedding', name: 'Wedding', swatch: ['#4f7396', '#0f7f5f', '#b58a2a'] },
+  { id: 'rose', name: 'Rose & Sage', swatch: ['#a4576b', '#4f7a5a', '#b58a2a'] },
+  { id: 'sage', name: 'Sage Garden', swatch: ['#4f7a5a', '#3f7d6d', '#b0703a'] },
+  { id: 'lavender', name: 'Lavender', swatch: ['#6a5bb5', '#157a6e', '#b58a2a'] },
+  { id: 'classic', name: 'Classic Blue', swatch: ['#2570cc', '#0a7d3b', '#c2571f'] },
+  { id: 'graphite', name: 'Graphite', swatch: ['#3d4a57', '#0f7f5f', '#8c7a2e'] },
+];
+
+// Sets the palette, light/dark, text size and contrast on <html>. index.html runs a tiny copy of this before first paint.
+export function applyAppearance() {
+  const h = document.documentElement;
+  const saved = pref('palette', 'wedding');
+  const mode = pref('mode', 'auto');
+  const dark = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+  h.dataset.palette = PALETTES.some((p) => p.id === saved) ? saved : 'wedding';
+  h.dataset.mode = dark ? 'dark' : 'light';
+  h.dataset.contrast = pref('contrast', '0') === '1' ? 'high' : 'normal';
+  h.style.setProperty('--fs-scale', pref('textSize', '1'));
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = getComputedStyle(h).getPropertyValue('--hero-1').trim() || '#4f7396';
+}
+try {
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (pref('mode', 'auto') === 'auto') applyAppearance(); });
+} catch { /* older browsers */ }

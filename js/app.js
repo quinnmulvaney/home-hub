@@ -1,5 +1,5 @@
 import * as store from './store.js';
-import { esc } from './util.js';
+import { esc, applyAppearance } from './util.js';
 import { startAlertMonitor } from './alerts.js';
 import home from './modules/home.js';
 import budget from './modules/budget.js';
@@ -65,6 +65,7 @@ pill.addEventListener('click', () => { location.hash = '#/settings'; });
 window.addEventListener('hashchange', route);
 
 view.innerHTML = '<div class="loading">Loading…</div>';
+applyAppearance();
 await store.init();
 route();
 startAlertMonitor();

@@ -1,5 +1,5 @@
 import * as store from '../store.js';
-import { esc, pref, setPref, toast, download, todayISO } from '../util.js';
+import { esc, pref, setPref, toast, download, todayISO, PALETTES, applyAppearance } from '../util.js';
 import { importCSVFile } from '../importer.js';
 import { showSystemNotification } from '../alerts.js';
 
@@ -25,6 +25,7 @@ export default {
         ${syncCard(s)}
         ${s.mode === 'cloud' ? householdCard(s) : ''}
         ${alertsCard()}
+        ${appearanceCard()}
         <section class="card">
           <div class="card-head"><h2>Preferences</h2></div>
           <label class="field"><span>Currency</span>
@@ -55,6 +56,24 @@ export default {
             <li><b>Android (Chrome):</b> menu ⋮ → <i>Add to Home screen</i> → Install.</li>
           </ul>`}
         </section>`}`;
+    }
+
+    function appearanceCard() {
+      const cur = pref('palette', 'wedding'), mode = pref('mode', 'auto'), size = pref('textSize', '1'), hc = pref('contrast', '0') === '1';
+      const seg = (name, opts, value) => `<div class="seg" role="radiogroup" aria-label="${name}">${opts.map(([v, l]) =>
+        `<label><input type="radio" name="ap-${name}" data-appearance="${name}" value="${v}" ${String(value) === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>`;
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Appearance</h2></div>
+          <div class="swatches" role="radiogroup" aria-label="Color theme">
+            ${PALETTES.map((p) => `<button type="button" class="swatch ${cur === p.id ? 'active' : ''}" data-action="palette" data-id="${p.id}" role="radio" aria-checked="${cur === p.id}">
+              <span class="dots">${p.swatch.map((c) => `<i style="background:${c}"></i>`).join('')}</span><span class="sw-name">${esc(p.name)}</span></button>`).join('')}
+          </div>
+          <div class="field"><span>Light or dark</span>${seg('mode', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], mode)}</div>
+          <div class="field"><span>Text size</span>${seg('textSize', [['1', 'Standard'], ['1.15', 'Large'], ['1.3', 'Extra large']], size)}</div>
+          <label class="check"><input type="checkbox" data-appearance="contrast" ${hc ? 'checked' : ''}><span><b>High contrast</b><br><span class="muted small">Darker text, stronger borders and outlines.</span></span></label>
+          <p class="muted small">Saved on each device, so your phone and PC can look different.</p>
+        </section>`;
     }
 
     function alertsCard() {
@@ -159,6 +178,12 @@ export default {
             download(`home-hub-backup-${todayISO()}.json`, JSON.stringify({ app: 'home-hub', version: 1, exportedAt: new Date().toISOString(), data }, null, 2));
             break;
           }
+          case 'palette':
+            setPref('palette', b.dataset.id);
+            applyAppearance();
+            lastSig = '';
+            draw(store.getState());
+            return;
           case 'push-on':
             if (store.pushSupported()) { await store.enablePush(); toast('Phone alerts are on'); }
             else if ((await Notification.requestPermission()) === 'granted') toast('Notifications allowed');
@@ -218,6 +243,13 @@ export default {
           e.target.value = '';
         }
       }
+    });
+
+    root.addEventListener('change', (e) => {
+      const a = e.target.dataset.appearance;
+      if (!a) return;
+      setPref(a, a === 'contrast' ? (e.target.checked ? '1' : '0') : e.target.value);
+      applyAppearance();
     });
 
     // Redraw only when something shown here changes (not on every syncing→synced blip,

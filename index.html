@@ -9,6 +9,20 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <script>
+    /* Apply saved appearance before first paint so there is no flash of the wrong colors. */
+    (function () {
+      try {
+        var g = function (k, d) { var v = localStorage.getItem('homehub:pref:' + k); return v === null ? d : v; };
+        var h = document.documentElement, m = g('mode', 'auto');
+        var dark = m === 'dark' || (m !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        h.dataset.palette = g('palette', 'wedding');
+        h.dataset.mode = dark ? 'dark' : 'light';
+        h.dataset.contrast = g('contrast', '0') === '1' ? 'high' : 'normal';
+        h.style.setProperty('--fs-scale', g('textSize', '1'));
+      } catch (e) { /* storage blocked: defaults apply */ }
+    })();
+  </script>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
