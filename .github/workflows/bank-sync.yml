@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "sync = pull from bank; audit = read-only data check"
+        description: "sync = pull from bank; audit = read-only data check; inspect = list which fields the bank feed has (names only)"
         type: choice
-        options: [sync, audit]
+        options: [sync, audit, inspect]
         default: sync
       lookback_days:
         description: "Days of history to request"
@@ -45,8 +45,14 @@ jobs:
           HOUSEHOLD_ID: ${{ vars.HOUSEHOLD_ID }}
           AUDIT_EXPECTED: ${{ secrets.AUDIT_EXPECTED }}
 
+      - name: Inspect bank feed fields (names only)
+        if: inputs.mode == 'inspect'
+        run: python sync/inspect_fields.py
+        env:
+          SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
+
       - name: Sync transactions
-        if: inputs.mode != 'audit'
+        if: inputs.mode != 'audit' && inputs.mode != 'inspect'
         run: python sync/bank_sync.py
         env:
           SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
