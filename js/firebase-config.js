@@ -11,4 +11,4 @@ export const firebaseConfig = {
 
 // Web Push key (Firebase console → Project settings → Cloud Messaging → Web Push certificates →
 // Generate key pair). Leave empty to use in-app alerts only. Public value, safe to commit.
-export const vapidKey = '';
+export const vapidKey = 'BHIfXXuRYOt1H_DFgDLj6KBnqBTBtiFVqw3Ffoq7kjAazL6kdTC_l95rKojCZBeRuhwgJFfBzSZoRhmLOS-GYuU';
