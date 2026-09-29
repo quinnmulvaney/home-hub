@@ -1,19 +1,23 @@
 // Spending-limit alerts. computeAlerts is pure (also mirrored in sync/bank_sync.py for phone push);
 // notifyNew shows a toast + system notification when a category crosses a threshold while the app is open.
-import { money, toast, pref, setPref } from './util.js';
+import * as store from './store.js';
+import { money, toast, pref, setPref, monthKey } from './util.js';
+import { spendByCategory } from './stats.js';
 
 export const DEFAULT_ALERT_AT = 0.8;
 const RANK = { near: 1, over: 2 };
 
 // Categories at or past `alertAt` of their monthly budget, worst first.
-export function computeAlerts(cats, spentByCat, alertAt = DEFAULT_ALERT_AT) {
+// `enabled` is the master switch; a category can also opt out with `alerts: false`.
+export function computeAlerts(cats, spentByCat, alertAt = DEFAULT_ALERT_AT, enabled = true) {
   const out = [];
+  if (!enabled) return out;
   for (const c of cats) {
     const budget = Number(c.budget) || 0;
-    if (c.type !== 'expense' || c.archived || budget <= 0) continue;
+    if (c.type !== 'expense' || c.archived || c.alerts === false || budget <= 0) continue;
     const spent = spentByCat[c.id] || 0;
     const pct = spent / budget;
-    if (pct >= alertAt) out.push({ id: c.id, name: c.name, icon: c.icon || '📦', spent, budget, pct, level: pct >= 1 ? 'over' : 'near' });
+    if (pct >= alertAt) out.push({ id: c.id, name: c.name, icon: c.icon || '📦', spent, budget, pct, level: spent - budget > 0.004 ? 'over' : 'near' });
   }
   return out.sort((a, b) => b.pct - a.pct);
 }
@@ -55,4 +59,19 @@ export function notifyNew(alerts, month) {
     if (!pushOnThisDevice()) showSystemNotification(a.level === 'over' ? 'Over budget' : 'Nearing a budget limit', alertMessage(a), `budget-${a.id}`);
   }
   return fresh;
+}
+
+// Watches this month's spending on every screen so alerts show up wherever you are in the app.
+export function startAlertMonitor() {
+  let cats = [], settings = {}, txs = [];
+  const ready = { cats: false, tx: false };
+  const check = () => {
+    if (!ready.cats || !ready.tx) return;
+    const month = monthKey(new Date());
+    const b = settings.budget || {};
+    notifyNew(computeAlerts(cats, spendByCategory(txs, month), Number(b.alertAt) || DEFAULT_ALERT_AT, b.alertsOn !== false), month);
+  };
+  store.subscribe('categories', (l) => { cats = l; ready.cats = true; check(); });
+  store.subscribe('settings', (l) => { settings = Object.fromEntries(l.map((d) => [d.id, d])); check(); });
+  store.subscribeWhere('transactions', [['date', '>=', `${monthKey(new Date())}-01`]], (l) => { txs = l; ready.tx = true; check(); });
 }

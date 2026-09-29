@@ -7,6 +7,7 @@ import {
   addMonthsISO, monthsUntil, round2, sumBy, weddingSummary, isEssential, WEDDING_ID,
 } from '../stats.js';
 import { lineChart, ring } from '../charts.js';
+import { sortable } from '../sortable.js';
 
 // goals:         { name, icon, type: 'savings'|'emergency'|'debt', target, startAmount, deadline?, monthly?, apr?, createdDate, archived }
 // contributions: { goalId, date, amount, note }  (debt: payments toward principal; negative = money taken out)
@@ -45,9 +46,11 @@ export default {
     el.appendChild(root);
 
     let goals = [], contribs = [], cats = [], txs = [], settings = {}, wItems = [];
+    let dragging = false, dirty = false;
 
 
-    const active = () => goals.filter((g) => !g.archived).sort((a, b) => (a.createdDate || '').localeCompare(b.createdDate || ''));
+    const active = () => goals.filter((g) => !g.archived)
+      .sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9) || (a.createdDate || '').localeCompare(b.createdDate || ''));
     const hasWedding = () => !!(settings.wedding?.date || wItems.length);
     const wedding = () => weddingSummary(settings.wedding, wItems, contribs);
     const avg = () => averages(txs, cats, 3);
@@ -58,11 +61,12 @@ export default {
     // ---------- rendering ----------
 
     function draw() {
+      if (dragging) { dirty = true; return; }
       const list = active();
       const stats = new Map(list.map((g) => [g.id, goalStatus(g, contribs)]));
       renderKeepingFocus(root, `
         ${summaryCard(list, stats)}
-        ${list.map((g) => goalCard(g, stats.get(g.id))).join('')}
+        <div class="goal-list">${list.map((g) => goalCard(g, stats.get(g.id))).join('')}</div>
         ${hasWedding() ? weddingCard() : ''}
         <div class="btn-row goal-add">
           <button class="btn primary" data-action="new-goal">+ New goal</button>
@@ -129,7 +133,8 @@ export default {
       else line = '<span class="muted">Add money to see when you\'ll get there</span>';
       const streak = contributionStreak(contribs, g.id);
       return `
-        <article class="goal card ${st.done ? 'done' : ''}">
+        <article class="goal card ${st.done ? 'done' : ''}" data-id="${esc(g.id)}">
+          <button class="drag-handle goal-grip" data-focus-key="drag-${esc(g.id)}" aria-label="Reorder ${esc(g.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
           <button class="goal-main" data-action="open-goal" data-id="${esc(g.id)}">
             <span class="goal-head">
               <span class="cat-icon" aria-hidden="true">${esc(g.icon || TYPES[g.type]?.icon || '🎯')}</span>
@@ -400,7 +405,7 @@ export default {
           apr: form.type.value === 'debt' ? apr : 0, deadline: form.deadline.value || '',
         };
         if (editing) store.update('goals', g.id, data);
-        else store.add('goals', { ...data, createdDate: todayISO(), archived: false });
+        else store.add('goals', { ...data, createdDate: todayISO(), archived: false, order: goals.length });
         closeModal();
         toast('Saved');
       };
@@ -604,6 +609,13 @@ export default {
       // 7 months is enough for averages, round-ups and recurring-charge detection.
       store.subscribeWhere('transactions', [['date', '>=', `${addMonths(nowMonth(), -6)}-01`]], (l) => { txs = l; draw(); }),
     ];
+
+    sortable(root, {
+      list: '.goal-list', item: '.goal', handle: '.drag-handle',
+      onDrop: (ids) => ids.forEach((id, i) => store.update('goals', id, { order: i })),
+      onStart: () => { dragging = true; },
+      onEnd: () => { dragging = false; if (dirty) { dirty = false; draw(); } },
+    });
 
     draw();
     return () => unsubs.forEach((u) => u());

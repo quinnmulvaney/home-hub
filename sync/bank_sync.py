@@ -90,18 +90,22 @@ def compute_alerts(cats, all_tx, month, alert_at):
     out = []
     for cid, c in cats.items():
         budget = float(c.get("budget") or 0)
-        if c.get("type") != "expense" or c.get("archived") or budget <= 0:
+        if c.get("type") != "expense" or c.get("archived") or c.get("alerts") is False or budget <= 0:
             continue
         pct = spent[cid] / budget
         if pct >= alert_at:
-            out.append((cid, c.get("name", "Category"), "over" if pct >= 1 else "near", pct, spent[cid], budget))
+            out.append((cid, c.get("name", "Category"), "over" if spent[cid] - budget > 0.004 else "near", pct, spent[cid], budget))
     return sorted(out, key=lambda a: -a[3])
 
 
 def send_alerts(hh, cats, all_tx, month):
     """Push a notification to every registered device when a category newly crosses its limit."""
     settings = hh.collection("settings").document("budget").get()
-    alert_at = float((settings.to_dict() or {}).get("alertAt") or 0.8) if settings.exists else 0.8
+    prefs = (settings.to_dict() or {}) if settings.exists else {}
+    if prefs.get("alertsOn") is False:
+        log("Budget alerts: turned off")
+        return
+    alert_at = float(prefs.get("alertAt") or 0.8)
     state_ref = hh.collection("bankSync").document("alerts")
     state = state_ref.get()
     sent = (state.to_dict() or {}) if state.exists else {}

@@ -4,8 +4,9 @@ import {
   openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId,
 } from '../util.js';
 import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
-import { averages, spendByCategory, goalStatus, weddingSummary, round2 } from '../stats.js';
-import { computeAlerts, alertMessage, notifyNew, DEFAULT_ALERT_AT } from '../alerts.js';
+import { averages, spendByCategory, goalStatus, weddingSummary, round2, categoryInsight, reducibility } from '../stats.js';
+import { sortable } from '../sortable.js';
+import { computeAlerts, alertMessage, DEFAULT_ALERT_AT } from '../alerts.js';
 
 // Data model (both collections live under the household):
 //   categories:   { name, icon, type: 'expense'|'income', budget (monthly), order, archived }
@@ -66,6 +67,7 @@ export default {
     let wItems = [];
     const ready = { cats: false, tx: false };
     let holdDraw = false;
+    let dragging = false;
     let dirty = false;
 
     // Only the months on screen are loaded from the database, not your whole history.
@@ -108,9 +110,9 @@ export default {
     const findTx = (id) => txs.find((t) => t.id === id) || reviewTx.find((t) => t.id === id) || recent().find((t) => t.id === id);
 
     const alertAt = () => Number(settings.budget?.alertAt) || DEFAULT_ALERT_AT;
-    const currentAlerts = () => computeAlerts(cats, spendByCategory(recent(), nowMonth()), alertAt());
+    const alertsEnabled = () => settings.budget?.alertsOn !== false;
+    const currentAlerts = () => computeAlerts(cats, spendByCategory(recent(), nowMonth()), alertAt(), alertsEnabled());
     function onData() {
-      if (ready.cats && ready.tx) notifyNew(currentAlerts(), nowMonth());
       draw();
     }
     function refresh() { syncSubs(); draw(); }
@@ -168,7 +170,7 @@ export default {
     }
 
     function draw() {
-      if (holdDraw) { dirty = true; return; }
+      if (holdDraw || dragging) { dirty = true; return; }
       const range = currentRange();
       const rangeTx = txs.filter((t) => t.date && t.date >= range.from && t.date <= range.to);
       const body = ui.tab === 'transactions' ? transactionsTab(rangeTx, range)
@@ -398,8 +400,29 @@ export default {
 
     // ---------- Plan ----------
 
-    function planTab() {
+    // Per-category history and "can this be cut?" verdicts for the Plan tab.
+    function planInsights() {
       const active = cats.filter((c) => c.type === 'expense' && !c.archived);
+      const recentTx = recent();
+      const firstDate = recentTx.reduce((m, t) => (t.date && (!m || t.date < m) ? t.date : m), '');
+      const byCat = new Map();
+      for (const t of recentTx) { if (!byCat.has(t.categoryId)) byCat.set(t.categoryId, []); byCat.get(t.categoryId).push(t); }
+      const insights = new Map(active.map((c) => {
+        const ins = categoryInsight(byCat.get(c.id) || [], 3, todayISO(), firstDate);
+        return [c.id, { ins, red: reducibility(c, ins) }];
+      }));
+      // Where a lower budget is realistic: only where the current budget is above the suggested target.
+      const trims = active.map((c) => ({ c, ...insights.get(c.id) }))
+        .filter((x) => x.red.cutPct > 0 && x.ins.avg > 0 && (Number(x.c.budget) || 0) !== x.red.target && (Number(x.c.budget) || Infinity) > x.red.target)
+        .map((x) => ({ ...x, save: round2(x.ins.avg - x.red.target) }))
+        .filter((x) => x.save >= 5)
+        .sort((a, b) => b.save - a.save)
+        .slice(0, 6);
+      return { active, insights, trims };
+    }
+
+    function planTab() {
+      const { active, insights, trims } = planInsights();
       const avg = averages(recent(), cats, 3);
       const budgeted = round2(active.reduce((t, c) => t + (Number(c.budget) || 0), 0));
       const goalsPerMonth = goalNeeds();
@@ -429,8 +452,23 @@ export default {
           ${goalsPerMonth ? '' : '<p class="muted small">Goals aren\'t using any of your income yet. Add some under <a href="#/goals">Goals</a>.</p>'}
         </section>
 
+        ${trims.length ? `
+        <section class="card">
+          <div class="card-head"><h2>Room to trim</h2><span class="muted small">about ${money(round2(trims.reduce((t, x) => t + x.save, 0)))}/mo</span></div>
+          <p class="muted small">Based on your last 3 months and what kind of spending each one is. Tap one to see why.</p>
+          <div class="trims">${trims.map((x) => `
+            <button class="trim-row" data-action="cat-detail" data-id="${esc(x.c.id)}">
+              <span class="cat-icon" aria-hidden="true">${esc(x.c.icon || '📦')}</span>
+              <span class="plan-main"><span class="name">${esc(x.c.name)} <span class="tag ${x.red.level}">${esc(x.red.label)}</span></span>
+                <span class="muted small">Averages ${money(x.ins.avg)}, try ${money(x.red.target)}</span></span>
+              <span class="good trim-save">−${money(x.save)}</span>
+            </button>`).join('')}</div>
+          <button class="btn primary" data-action="plan-trim-all">Set these budgets</button>
+        </section>` : ''}
+
         <section class="card">
           <div class="card-head"><h2>Monthly budgets</h2><span class="muted small">${money(budgeted)} total</span></div>
+          <p class="muted small">Drag <span aria-hidden="true">⋮⋮</span> to reorder. Tap a category to see its history and decide on an amount.</p>
           <div class="btn-row plan-tools">
             <button class="btn" data-action="plan-fill">Fill from my average</button>
             <button class="btn" data-action="plan-round">Round to $10</button>
@@ -438,15 +476,19 @@ export default {
           </div>
           <div class="plan-list">
             ${active.map((c) => {
-              const a = avg.byCat[c.id] || 0;
+              const { ins, red } = insights.get(c.id);
               const b = Number(c.budget) || 0;
               return `
-              <div class="plan-row">
-                <span class="cat-icon" aria-hidden="true">${esc(c.icon || '📦')}</span>
-                <span class="plan-main">
-                  <span class="name">${esc(c.name)}</span>
-                  <span class="muted small">${a > 0 ? `Averages ${money(a)}${b === Math.round(a) ? '' : ` · <button class="link" data-action="plan-use" data-id="${esc(c.id)}" data-val="${Math.round(a)}">use</button>`}` : 'No spending yet'}</span>
-                </span>
+              <div class="plan-row" data-id="${esc(c.id)}">
+                <button class="drag-handle" data-focus-key="drag-${esc(c.id)}" aria-label="Reorder ${esc(c.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
+                <button class="plan-open" data-action="cat-detail" data-id="${esc(c.id)}" aria-label="${esc(c.name)} spending details">
+                  <span class="cat-icon" aria-hidden="true">${esc(c.icon || '📦')}</span>
+                  <span class="plan-main">
+                    <span class="name">${esc(c.name)} ${ins.months ? `<span class="tag ${red.level}">${esc(red.label)}</span>` : ''}</span>
+                    <span class="muted small">${ins.months && ins.avg > 0 ? `Avg ${money(ins.avg)} · High ${money(ins.high.total)} · Low ${money(ins.low.total)}` : 'No spending in the last 3 months'}</span>
+                  </span>
+                </button>
+                <button class="bell ${c.alerts === false ? '' : 'on'}" data-action="toggle-alert" data-id="${esc(c.id)}" aria-pressed="${c.alerts !== false}" aria-label="Limit alerts for ${esc(c.name)}: ${c.alerts === false ? 'off' : 'on'}. Tap to switch." title="${c.alerts === false ? 'Alerts off' : 'Alerts on'}">${c.alerts === false ? '🔕' : '🔔'}</button>
                 <span class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan="${esc(c.id)}" data-focus-key="plan-${esc(c.id)}" value="${b || ''}" placeholder="0" aria-label="${esc(c.name)} monthly budget"></span>
               </div>`;
             }).join('')}
@@ -455,8 +497,9 @@ export default {
 
         <section class="card">
           <div class="card-head"><h2>Alerts</h2></div>
+          <label class="check master-alert"><input type="checkbox" data-plan-alerts-on ${alertsEnabled() ? 'checked' : ''}><span><b>Category limit alerts</b><br><span class="muted small">Turn all limit warnings on or off. Use the 🔔 on each category to pick which ones.</span></span></label>
           <label class="field"><span>Warn me when a category reaches</span>
-            <select class="input" data-plan-alert>
+            <select class="input" data-plan-alert ${alertsEnabled() ? '' : 'disabled'}>
               ${[70, 80, 90, 100].map((v) => `<option value="${v}" ${v === at ? 'selected' : ''}>${v}% of its budget</option>`).join('')}
             </select>
           </label>
@@ -643,6 +686,119 @@ export default {
       };
     }
 
+    // Rewrite category order after a drag: the moved categories keep their slots among all categories.
+    function reorderPlan(ids) {
+      const active = cats.filter((c) => c.type === 'expense' && !c.archived);
+      const slots = active.map((c) => cats.indexOf(c));
+      const full = [...cats];
+      ids.forEach((id, i) => { full[slots[i]] = catById.get(id); });
+      full.forEach((c, i) => { if (c && c.order !== i) store.update('categories', c.id, { order: i }); });
+    }
+
+    // Everything about one category over the last 3 full months, and what a sensible budget could be.
+    function catDetail(id) {
+      const c = catById.get(id);
+      if (!c) return;
+      const recentTx = recent();
+      const first = recentTx.reduce((m, t) => (t.date && (!m || t.date < m) ? t.date : m), '');
+      const ins = categoryInsight(recentTx.filter((t) => t.categoryId === id), 3, todayISO(), first);
+      const red = reducibility(c, ins);
+      const budget = Number(c.budget) || 0;
+      const mLabel = (m) => monthLabel(m, { month: 'short' });
+      const scaleMax = Math.max(ins.high?.total || 0, budget, ins.thisMonth, 1);
+      const overCount = budget > 0 ? ins.byMonth.filter((b) => b.total > budget).length : 0;
+      const trendTxt = ins.trend == null ? 'Not enough history'
+        : Math.abs(ins.trend) < 0.1 ? 'Steady'
+        : ins.trend > 0 ? `<span class="bad">↑ ${Math.round(ins.trend * 100)}% vs earlier months</span>` : `<span class="good">↓ ${Math.round(-ins.trend * 100)}% vs earlier months</span>`;
+      const goal = goals.filter((g) => !g.archived).sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9) || (a.createdDate || '').localeCompare(b.createdDate || ''))
+        .map((g) => ({ g, st: goalStatus(g, contribs) })).find((x) => !x.st.done);
+      let goalLine = '';
+      if (goal && red.cutAmount >= 5) {
+        const base = goal.st.payment || goal.st.neededPerMonth || 0;
+        if (base > 0) {
+          const m0 = Math.ceil(goal.st.remaining / base), m1 = Math.ceil(goal.st.remaining / (base + red.cutAmount));
+          if (m0 > m1) goalLine = ` Put that toward <b>${esc(goal.g.name)}</b> and you'd get there <b>${m0 - m1} month${m0 - m1 === 1 ? '' : 's'} sooner</b>.`;
+        }
+      }
+      const options = ins.months ? [
+        ['Lowest month', ins.low.total], ['Average', ins.avg], ['Highest month', ins.high.total],
+        ...(red.cutPct > 0 && !red.small ? [[`Target (−${Math.round(red.cutPct * 100)}%)`, red.target]] : []),
+      ].map(([label, v]) => [label, Math.round(v)]) : [];
+
+      const dlg = openModal(`
+        <div class="form detail">
+          <div class="detail-head"><span class="cat-icon">${esc(c.icon || '📦')}</span>
+            <div><h2>${esc(c.name)}</h2><span class="muted small">Last ${ins.months || 3} full months · budget ${budget ? `${money(budget)}/mo` : 'not set'}</span></div></div>
+          ${ins.months ? `
+          <div class="stat-grid three">
+            <div><span class="muted small">Average</span><b>${money(ins.avg)}</b></div>
+            <div><span class="muted small">High · ${esc(mLabel(ins.high.m))}</span><b>${money(ins.high.total)}</b></div>
+            <div><span class="muted small">Low · ${esc(mLabel(ins.low.m))}</span><b>${money(ins.low.total)}</b></div>
+          </div>
+          <div class="mbars" role="img" aria-label="Spending by month">
+            ${[...ins.byMonth.map((b) => ({ label: mLabel(b.m), v: b.total })), { label: `${mLabel(nowMonth())} so far`, v: ins.thisMonth, partial: true }].map((b) => `
+              <div class="mbar ${b.partial ? 'partial' : ''}"><span class="mlabel">${esc(b.label)}</span>
+                <span class="mtrack"><span class="mfill ${budget > 0 && b.v > budget ? 'over' : ''}" style="width:${Math.max(b.v, 0) / scaleMax * 100}%"></span>${budget > 0 ? `<span class="mbudget" style="left:${budget / scaleMax * 100}%" title="Budget"></span>` : ''}</span>
+                <b>${money(b.v)}</b></div>`).join('')}
+            ${budget > 0 ? '<div class="muted small mlegend">│ = your budget</div>' : ''}
+          </div>
+          <div class="kv">
+            <div><span>Typical purchase</span><b>${money(ins.median)}</b></div>
+            <div><span>Average purchase</span><b>${money(ins.avgTx)}</b></div>
+            <div><span>Purchases per month</span><b>${ins.perMonth}</b></div>
+            <div><span>Largest purchase</span><b>${ins.largest ? `${money(ins.largest.amount)} <span class="muted small">${esc(ins.largest.note || '')}</span>` : '—'}</b></div>
+            <div><span>Trend</span><b>${trendTxt}</b></div>
+            ${budget > 0 ? `<div><span>Months over budget</span><b class="${overCount ? 'bad' : 'good'}">${overCount} of ${ins.months}</b></div>` : ''}
+          </div>
+          ${ins.merchants.length ? `
+          <h3 class="detail-sub">Where it goes</h3>
+          <ul class="subs">${ins.merchants.slice(0, 5).map((m) => `<li><span>${esc(m.name)}</span><b>${money(m.total)}</b><span class="muted small">${m.count}× · ${Math.round(m.share * 100)}%</span></li>`).join('')}</ul>` : ''}
+
+          <div class="reduce ${red.level}">
+            <div class="reduce-head"><span class="tag ${red.level}">${esc(red.label)}</span><b>Can this be reduced?</b></div>
+            <p>${esc(red.blurb)}</p>
+            ${red.cutPct > 0 && !red.small ? `<p class="reduce-save">Trimming about <b>${Math.round(red.cutPct * 100)}%</b> would free up <b>${money(red.cutAmount)}/month</b> (${money(red.cutAmount * 12)}/year).${goalLine}</p>` : ''}
+            ${red.reasons.length || red.tips.length ? `<ul class="tips">${[...red.reasons, ...red.tips].map((t) => `<li>${t.includes('<') ? t : esc(t)}</li>`).join('')}</ul>` : ''}
+          </div>` : '<p class="muted">No spending in this category in the last 3 full months, so there’s nothing to base a budget on yet.</p>'}
+
+          <label class="check detail-alert"><input type="checkbox" data-alert-toggle ${c.alerts === false ? '' : 'checked'}><span>Alert me when this nears its limit</span></label>
+          <h3 class="detail-sub">Set the monthly budget</h3>
+          ${options.length ? `<div class="chips set-chips">${options.map(([label, v]) => `<button class="btn sm ${v === budget ? 'primary' : ''}" data-set="${v}">${esc(label)} ${money(v)}</button>`).join('')}</div>` : ''}
+          <div class="inline set-custom">
+            <div class="money-input"><span>$</span><input class="input" inputmode="decimal" placeholder="Custom amount" data-custom value="${budget || ''}" aria-label="Custom monthly budget"></div>
+            <button class="btn primary" data-save>Save</button>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn" data-m="tx">View transactions</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn" data-m="close">Close</button>
+          </div>
+        </div>`);
+      const setBudget = (v) => {
+        if (!(v >= 0)) { toast('Enter a number'); return; }
+        store.update('categories', id, { budget: v });
+        closeModal();
+        toast(`${c.name} budget set to ${money(v)}`);
+      };
+      dlg.querySelectorAll('[data-set]').forEach((b) => { b.onclick = () => setBudget(Number(b.dataset.set)); });
+      dlg.querySelector('[data-save]').onclick = () => {
+        const raw = dlg.querySelector('[data-custom]').value.trim();
+        setBudget(raw === '' ? 0 : parseAmount(raw));
+      };
+      dlg.querySelector('[data-custom]').onkeydown = (e) => { if (e.key === 'Enter') dlg.querySelector('[data-save]').click(); };
+      dlg.querySelector('[data-alert-toggle]').onchange = (e) => {
+        store.update('categories', id, { alerts: e.target.checked });
+        toast(e.target.checked ? `Alerts on for ${c.name}` : `Alerts off for ${c.name}`);
+      };
+      dlg.querySelector('[data-m=close]').onclick = closeModal;
+      dlg.querySelector('[data-m=tx]').onclick = () => {
+        ui.period = 'custom'; ui.from = `${addMonths(nowMonth(), -3)}-01`; ui.to = todayISO();
+        ui.cat = id; ui.search = ''; ui.tab = 'transactions';
+        closeModal();
+        refresh();
+      };
+    }
+
     // Remember merchant -> category, and apply it to other rows from that merchant still awaiting review.
     function saveRule(key, data, exceptId) {
       const existing = rules.find((r) => r.match === key);
@@ -746,6 +902,21 @@ export default {
         case 'add-tx': return txModal(null);
         case 'edit-tx': return txModal(findTx(id));
         case 'alert-cat': ui.period = 'month'; ui.month = nowMonth(); ui.cat = id; ui.search = ''; ui.tab = 'transactions'; break;
+        case 'cat-detail': return catDetail(id);
+        case 'toggle-alert': {
+          const c = catById.get(id);
+          if (!c) return;
+          store.update('categories', id, { alerts: c.alerts === false });
+          toast(c.alerts === false ? `Alerts on for ${c.name}` : `Alerts off for ${c.name}`);
+          return;
+        }
+        case 'plan-trim-all': {
+          const { trims } = planInsights();
+          if (!trims.length) return;
+          trims.forEach((x) => store.update('categories', x.c.id, { budget: x.red.target }));
+          toast(`Budgets lowered by about ${money(round2(trims.reduce((t, x) => t + x.save, 0)))} a month`);
+          return;
+        }
         case 'plan-use': holdRedraw(); store.update('categories', id, { budget: Number(b.dataset.val) }); dirty = true; return;
         case 'plan-income-avg': saveSetting('budget', { income: Math.round(averages(recent(), cats, 3).income) }); return;
         case 'plan-fill': {
@@ -782,6 +953,9 @@ export default {
         if (!(v >= 0)) { toast('Enter a number'); return; }
         holdRedraw();
         saveSetting('budget', { income: v });
+      } else if (t.dataset.planAlertsOn !== undefined) {
+        saveSetting('budget', { alertsOn: t.checked });
+        toast(t.checked ? 'Limit alerts on' : 'Limit alerts off');
       } else if (t.dataset.planAlert !== undefined) {
         saveSetting('budget', { alertAt: Number(t.value) / 100 });
         toast(`Alerts at ${t.value}%`);
@@ -831,6 +1005,12 @@ export default {
     root.addEventListener('pointerleave', () => {
       root.querySelectorAll('.tooltip').forEach((t) => { t.hidden = true; });
       root.querySelectorAll('.col.hover').forEach((c) => c.classList.remove('hover'));
+    });
+
+    sortable(root, {
+      list: '.plan-list', item: '.plan-row', handle: '.drag-handle', onDrop: reorderPlan,
+      onStart: () => { dragging = true; },
+      onEnd: () => { dragging = false; if (dirty) { dirty = false; draw(); } },
     });
 
     refresh();

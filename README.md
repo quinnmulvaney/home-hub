@@ -85,10 +85,12 @@ Run it manually any time: GitHub → Actions → Bank sync → Run workflow.
 
 ## What's in the app
 
+**Home**: the landing screen. A live wedding countdown (days, hours, minutes, seconds; the same component will drop into the Calendar tab later), this month's spending against budget, limit alerts, and goal progress.
+
 **Budget**
 - **Overview:** income, spent, left to spend and net for any period (month, year, year to date, last 3/12 months, all time, or a custom range); a bar per category against its budget (budgets scale to the period); spending-limit alerts; account balances; month-by-month chart.
 - **Transactions:** add/edit/delete, search, filter by category, and a *Needs review* queue for bank transactions that couldn't be categorized.
-- **Plan:** edit every category's monthly budget in one place, fill them from your recent averages, set the income you plan around, and see how much is left after budgets and goals. Set the alert threshold (70–100%).
+- **Plan:** drag to reorder categories; tap one to see its last 3 months (average, high, low, top merchants, trend) with a verdict on whether it can be reduced and one-tap budget suggestions; a *Room to trim* list; a 🔔 per category to turn its limit alerts on or off; and edit every category's monthly budget in one place, fill them from your recent averages, set the income you plan around, and see how much is left after budgets and goals. Set the alert threshold (70–100%).
 - **Categories:** names, icons, archive.
 
 **Goals**: savings goals, emergency fund (sized as 3 or 6 months of essential spending), and debt payoff (with interest). Each shows progress, the amount to set aside per month to hit the deadline, whether you're on track at your current pace, and a chart of saved vs. needed. Milestones (25/50/75/100%) and streaks keep it motivating. *Ways to get there faster* are computed from your own data: pay-yourself-first per paycheck, round-up jar, leftover-budget sweep, "what if I spend X% less on…", recurring charges to review, windfall splitter, 52-week challenge, no-spend days.
@@ -114,7 +116,10 @@ css/app.css             all styles (light + dark)
 js/app.js               navigation; list of modules
 js/store.js             data layer: local storage or Firestore, same API for every module
 js/util.js              formatting, dates, modal/toast helpers
+js/modules/home.js      landing screen with wedding countdown
 js/modules/budget.js    overview, transactions, plan, categories
+js/countdown.js         live countdown (reusable)
+js/sortable.js          drag-to-reorder (mouse, touch, keyboard)
 js/modules/goals.js     goals + ways to save faster
 js/modules/wedding.js   wedding planner
 js/stats.js             shared calculations (averages, goal math, loans)

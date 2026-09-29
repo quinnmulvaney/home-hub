@@ -1,5 +1,7 @@
 import * as store from './store.js';
 import { esc } from './util.js';
+import { startAlertMonitor } from './alerts.js';
+import home from './modules/home.js';
 import budget from './modules/budget.js';
 import goals from './modules/goals.js';
 import wedding from './modules/wedding.js';
@@ -9,6 +11,7 @@ import { placeholder } from './modules/placeholder.js';
 // Each module: { id, title, icon, render(el) -> cleanup? }.
 // To add a feature later, write a module and add it here.
 const modules = [
+  home,
   budget,
   goals,
   wedding,
@@ -24,14 +27,14 @@ const pill = document.getElementById('sync-pill');
 let cleanup = null;
 
 nav.innerHTML = `
-  <div class="brand"><img src="icons/icon.svg" alt="" width="28" height="28"><span>Home Hub</span></div>
+  <a class="brand" href="#/home"><img src="icons/icon.svg" alt="" width="28" height="28"><span>Home Hub</span></a>
   ${modules.map((m) => `
     <a class="nav-item" href="#/${m.id}" data-id="${m.id}">
       <span class="nav-icon" aria-hidden="true">${m.icon}</span><span class="nav-label">${esc(m.title)}</span>
     </a>`).join('')}`;
 
 function route() {
-  const id = location.hash.replace(/^#\/?/, '').split('/')[0] || 'budget';
+  const id = location.hash.replace(/^#\/?/, '').split('/')[0] || 'home';
   const mod = modules.find((m) => m.id === id) || modules[0];
   nav.querySelectorAll('.nav-item').forEach((a) => a.classList.toggle('active', a.dataset.id === mod.id));
   title.textContent = mod.title;
@@ -64,6 +67,7 @@ window.addEventListener('hashchange', route);
 view.innerHTML = '<div class="loading">Loading…</div>';
 await store.init();
 route();
+startAlertMonitor();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e));

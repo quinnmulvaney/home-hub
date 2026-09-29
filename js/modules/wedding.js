@@ -4,6 +4,7 @@ import {
 } from '../util.js';
 import { weddingSummary, round2, sumBy, WEDDING_ID } from '../stats.js';
 import { lineChart, ring } from '../charts.js';
+import { sortable } from '../sortable.js';
 
 // settings/wedding:  { date, guests, budget }
 // weddingItems:      { name, icon, estimate, paid, vendor, dueDate, note, order }
@@ -32,14 +33,14 @@ export default {
     el.appendChild(root);
 
     let settings = {}, items = [], contribs = [];
-    let holdDraw = false, dirty = false;
+    let holdDraw = false, dirty = false, dragging = false;
     const plan = () => settings.wedding || {};
     const savePlan = (patch) => store.put('settings', 'wedding', { ...plan(), ...patch });
     function hold() { holdDraw = true; setTimeout(() => { holdDraw = false; if (dirty) { dirty = false; draw(); } }, 400); }
 
 
     function draw() {
-      if (holdDraw) { dirty = true; return; }
+      if (holdDraw || dragging) { dirty = true; return; }
       const w = weddingSummary(plan(), items, contribs);
       renderKeepingFocus(root, `
         ${headerCard(w)}
@@ -126,7 +127,8 @@ export default {
       const pct = cost > 0 ? Math.min(paid / cost, 1) * 100 : 0;
       const overdue = i.dueDate && paid < cost && i.dueDate < todayISO();
       return `
-        <div class="item">
+        <div class="item" data-id="${esc(i.id)}">
+          <button class="drag-handle" data-focus-key="drag-${esc(i.id)}" aria-label="Reorder ${esc(i.name)}. Drag, or use the up and down arrow keys." title="Drag to reorder">⋮⋮</button>
           <button class="item-main" data-action="edit-item" data-id="${esc(i.id)}">
             <span class="cat-icon" aria-hidden="true">${esc(i.icon || '✨')}</span>
             <span class="item-body">
@@ -338,6 +340,13 @@ export default {
       store.subscribe('weddingItems', (l) => { items = [...l].sort((a, b) => (a.order ?? 999) - (b.order ?? 999)); draw(); }),
       store.subscribe('contributions', (l) => { contribs = l; draw(); }),
     ];
+
+    sortable(root, {
+      list: '.items', item: '.item', handle: '.drag-handle',
+      onDrop: (ids) => ids.forEach((id, i) => store.update('weddingItems', id, { order: i })),
+      onStart: () => { dragging = true; },
+      onEnd: () => { dragging = false; if (dirty) { dirty = false; draw(); } },
+    });
 
     draw();
     return () => unsubs.forEach((u) => u());
