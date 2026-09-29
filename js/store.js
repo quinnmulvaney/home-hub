@@ -105,6 +105,24 @@ export function subscribeWhere(coll, conds, cb) {
   };
 }
 
+// How many docs match, without downloading them (server-side count; local mode counts in memory).
+export async function countWhere(coll, conds) {
+  if (state.mode !== 'cloud') return localMatches(coll, conds).length;
+  const snap = await fb.fs.getCountFromServer(cloudQuery(coll, conds));
+  return snap.data().count;
+}
+
+// Merge the same `patch` into many docs at once (chunked to Firestore's batch limit).
+export async function bulkUpdate(coll, ids, patch) {
+  if (state.mode !== 'cloud') { ids.forEach((id) => update(coll, id, patch)); return; }
+  const { doc: ref, writeBatch } = fb.fs;
+  for (let i = 0; i < ids.length; i += 400) {
+    const batch = writeBatch(fb.db);
+    ids.slice(i, i + 400).forEach((id) => batch.set(ref(fb.db, 'households', state.householdId, coll, id), { ...patch, id, updatedAt: Date.now() }, { merge: true }));
+    await batch.commit();
+  }
+}
+
 export async function fetchWhere(coll, conds) {
   if (state.mode !== 'cloud') return localMatches(coll, conds);
   const qs = await fb.fs.getDocs(cloudQuery(coll, conds));

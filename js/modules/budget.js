@@ -6,7 +6,7 @@ import {
 import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
 import { averages, spendByCategory, goalStatus, weddingSummary, round2, categoryInsight, reducibility } from '../stats.js';
 import { sortable } from '../sortable.js';
-import { computeAlerts, alertMessage, DEFAULT_ALERT_AT } from '../alerts.js';
+import { computeAlerts, alertMessage, computeBigPurchases, bigSkipReasons, bigMessage, bigSettings, DEFAULT_ALERT_AT } from '../alerts.js';
 
 // Data model (both collections live under the household):
 //   categories:   { name, icon, type: 'expense'|'income', budget (monthly), order, archived }
@@ -111,6 +111,7 @@ export default {
 
     const alertAt = () => Number(settings.budget?.alertAt) || DEFAULT_ALERT_AT;
     const alertsEnabled = () => settings.budget?.alertsOn !== false;
+    const currentBig = () => { const b = bigSettings(settings); return b.on ? computeBigPurchases(cats, recent(), { amount: b.amount }) : []; };
     const currentAlerts = () => computeAlerts(cats, spendByCategory(recent(), nowMonth()), alertAt(), alertsEnabled());
     function onData() {
       draw();
@@ -231,12 +232,21 @@ export default {
 
       const reviewCount = reviewTx.length;
       const alertList = currentAlerts();
+      const bigList = currentBig();
       return `
         ${alertList.length ? `
           <div class="alerts" aria-label="Spending limit alerts">
             ${alertList.map((a) => `
               <button class="alert-row ${a.level}" data-action="alert-cat" data-id="${esc(a.id)}">
                 <span>${a.level === 'over' ? '🚨' : '⚠️'} ${esc(alertMessage(a))}</span>
+                <span class="review-go">View ›</span>
+              </button>`).join('')}
+          </div>` : ''}
+        ${bigList.length ? `
+          <div class="alerts" aria-label="Large purchases">
+            ${bigList.map((p) => `
+              <button class="alert-row big" data-action="edit-tx" data-id="${esc(p.id)}">
+                <span>💳 Large purchase: ${esc(bigMessage(p))}</span>
                 <span class="review-go">View ›</span>
               </button>`).join('')}
           </div>` : ''}
@@ -431,6 +441,11 @@ export default {
       const left = round2(base - budgeted - goalsPerMonth);
       const share = (v) => (base > 0 ? Math.min(Math.max(v / base, 0), 1) * 100 : 0);
       const at = Math.round(alertAt() * 100);
+      const bigOn = settings.budget?.bigOn === true;
+      const bigAmount = Number(settings.budget?.bigAmount) || 0;
+      const bigSkipped = bigOn && bigAmount > 0
+        ? [...bigSkipReasons(cats, recent(), bigAmount)].filter(([, why]) => why !== 'never').map(([cid]) => catById.get(cid)?.name).filter(Boolean)
+        : [];
       return `
         <section class="card">
           <div class="card-head"><h2>Monthly plan</h2></div>
@@ -503,6 +518,12 @@ export default {
               ${[70, 80, 90, 100].map((v) => `<option value="${v}" ${v === at ? 'selected' : ''}>${v}% of its budget</option>`).join('')}
             </select>
           </label>
+          <hr class="sep">
+          <label class="check master-alert"><input type="checkbox" data-plan-big-on ${bigOn ? 'checked' : ''}><span><b>Large purchase alerts</b><br><span class="muted small">Tell me about any single purchase over the amount below.</span></span></label>
+          <label class="field"><span>Alert me for purchases over</span>
+            <div class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan-big-amount data-focus-key="plan-big" value="${bigAmount || ''}" placeholder="200" ${bigOn ? '' : 'disabled'}></div>
+          </label>
+          ${bigOn && bigSkipped.length ? `<p class="muted small">Skipped automatically because big purchases are normal there: <b>${bigSkipped.map(esc).join(', ')}</b>. Change this per category in its details.</p>` : ''}
           <p class="muted small">You'll see a banner on Overview and a message when it happens. To also get alerts on your phone when the app is closed, turn on notifications in <a href="#/settings">Settings</a>.</p>
         </section>`;
     }
@@ -686,6 +707,59 @@ export default {
       };
     }
 
+    // Delete a category. If transactions use it, offer to move them to another category first.
+    async function deleteCategory(c) {
+      let used = 0;
+      try { used = await store.countWhere('transactions', [['categoryId', '==', c.id]]); } catch { used = 1; }
+      if (!used) {
+        if (!confirm(`Delete “${c.name}”?`)) return;
+        store.remove('categories', c.id);
+        closeModal();
+        toast(`${c.name} deleted`);
+        return;
+      }
+      const others = cats.filter((x) => x.id !== c.id && x.type === c.type && !x.archived);
+      const dlg = openModal(`
+        <form class="form" novalidate>
+          <h2>Delete “${esc(c.name)}”?</h2>
+          <p><b>${used}</b> transaction${used === 1 ? '' : 's'} use${used === 1 ? 's' : ''} this category. Choose where ${used === 1 ? 'it goes' : 'they go'} so your history stays accurate:</p>
+          <label class="field"><span>Move them to</span>
+            <select class="input" name="to">
+              ${others.map((x) => `<option value="${esc(x.id)}">${esc(x.icon || '')} ${esc(x.name)}</option>`).join('')}
+              <option value="">Leave them uncategorized</option>
+            </select></label>
+          <p class="form-error" hidden></p>
+          <div class="form-actions"><span class="spacer"></span>
+            <button type="button" class="btn" data-m="cancel">Cancel</button>
+            <button type="submit" class="btn danger">Delete category</button></div>
+        </form>`);
+      const form = dlg.querySelector('form');
+      form.querySelector('[data-m=cancel]').onclick = closeModal;
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('[type=submit]');
+        btn.disabled = true;
+        btn.textContent = 'Deleting…';
+        try {
+          if (form.to.value) {
+            const docs = await store.fetchWhere('transactions', [['categoryId', '==', c.id]]);
+            await store.bulkUpdate('transactions', docs.map((t) => t.id), { categoryId: form.to.value });
+          }
+          rules.filter((r) => r.categoryId === c.id).forEach((r) => store.remove('rules', r.id));
+          store.remove('categories', c.id);
+          closeModal();
+          toast(`${c.name} deleted${form.to.value ? `, ${used} moved to ${catById.get(form.to.value)?.name || 'another category'}` : ''}`);
+        } catch (err) {
+          console.error(err);
+          btn.disabled = false;
+          btn.textContent = 'Delete category';
+          const el = form.querySelector('.form-error');
+          el.textContent = `Couldn't finish: ${err.message}`;
+          el.hidden = false;
+        }
+      };
+    }
+
     // Rewrite category order after a drag: the moved categories keep their slots among all categories.
     function reorderPlan(ids) {
       const active = cats.filter((c) => c.type === 'expense' && !c.archived);
@@ -720,6 +794,9 @@ export default {
           if (m0 > m1) goalLine = ` Put that toward <b>${esc(goal.g.name)}</b> and you'd get there <b>${m0 - m1} month${m0 - m1 === 1 ? '' : 's'} sooner</b>.`;
         }
       }
+      const bigAmt = Number(settings.budget?.bigAmount) || 200;
+      const bigReason = bigSkipReasons(cats, recentTx, bigAmt).get(id);
+      const bigWhy = { fixed: 'fixed bill', typical: 'big purchases are normal here' }[bigReason] || '';
       const options = ins.months ? [
         ['Lowest month', ins.low.total], ['Average', ins.avg], ['Highest month', ins.high.total],
         ...(red.cutPct > 0 && !red.small ? [[`Target (−${Math.round(red.cutPct * 100)}%)`, red.target]] : []),
@@ -762,6 +839,13 @@ export default {
           </div>` : '<p class="muted">No spending in this category in the last 3 full months, so there’s nothing to base a budget on yet.</p>'}
 
           <label class="check detail-alert"><input type="checkbox" data-alert-toggle ${c.alerts === false ? '' : 'checked'}><span>Alert me when this nears its limit</span></label>
+          <label class="field detail-big"><span>Large purchase alerts</span>
+            <select class="input" data-big-mode>
+              <option value="auto" ${c.bigAlerts == null ? 'selected' : ''}>Automatic${bigWhy ? ` (skipped: ${bigWhy})` : ''}</option>
+              <option value="on" ${c.bigAlerts === true ? 'selected' : ''}>Always alert</option>
+              <option value="off" ${c.bigAlerts === false ? 'selected' : ''}>Never alert</option>
+            </select>
+          </label>
           <h3 class="detail-sub">Set the monthly budget</h3>
           ${options.length ? `<div class="chips set-chips">${options.map(([label, v]) => `<button class="btn sm ${v === budget ? 'primary' : ''}" data-set="${v}">${esc(label)} ${money(v)}</button>`).join('')}</div>` : ''}
           <div class="inline set-custom">
@@ -770,6 +854,7 @@ export default {
           </div>
           <div class="form-actions">
             <button type="button" class="btn" data-m="tx">View transactions</button>
+            <button type="button" class="btn danger" data-m="delete">Delete</button>
             <span class="spacer"></span>
             <button type="button" class="btn" data-m="close">Close</button>
           </div>
@@ -790,6 +875,11 @@ export default {
         store.update('categories', id, { alerts: e.target.checked });
         toast(e.target.checked ? `Alerts on for ${c.name}` : `Alerts off for ${c.name}`);
       };
+      dlg.querySelector('[data-big-mode]').onchange = (e) => {
+        store.update('categories', id, { bigAlerts: e.target.value === 'on' ? true : e.target.value === 'off' ? false : null });
+        toast('Saved');
+      };
+      dlg.querySelector('[data-m=delete]').onclick = () => deleteCategory(c);
       dlg.querySelector('[data-m=close]').onclick = closeModal;
       dlg.querySelector('[data-m=tx]').onclick = () => {
         ui.period = 'custom'; ui.from = `${addMonths(nowMonth(), -3)}-01`; ui.to = todayISO();
@@ -953,6 +1043,14 @@ export default {
         if (!(v >= 0)) { toast('Enter a number'); return; }
         holdRedraw();
         saveSetting('budget', { income: v });
+      } else if (t.dataset.planBigOn !== undefined) {
+        saveSetting('budget', { bigOn: t.checked, bigAmount: Number(settings.budget?.bigAmount) || 200 });
+        toast(t.checked ? 'Large purchase alerts on' : 'Large purchase alerts off');
+      } else if (t.dataset.planBigAmount !== undefined) {
+        const v = parseAmount(t.value);
+        if (!(v > 0)) { toast('Enter an amount above zero'); return; }
+        holdRedraw();
+        saveSetting('budget', { bigAmount: v });
       } else if (t.dataset.planAlertsOn !== undefined) {
         saveSetting('budget', { alertsOn: t.checked });
         toast(t.checked ? 'Limit alerts on' : 'Limit alerts off');

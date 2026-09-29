@@ -1,7 +1,7 @@
 import * as store from '../store.js';
 import { esc, money, todayISO, monthKey, monthLabel } from '../util.js';
 import { goalStatus, weddingSummary, spendByCategory, round2, sumBy } from '../stats.js';
-import { computeAlerts, alertMessage, DEFAULT_ALERT_AT } from '../alerts.js';
+import { computeAlerts, alertMessage, computeBigPurchases, bigMessage, bigSettings, subscribeRecent, DEFAULT_ALERT_AT } from '../alerts.js';
 import { countdownHtml, startCountdown } from '../countdown.js';
 import { ring } from '../charts.js';
 
@@ -16,7 +16,7 @@ export default {
     root.className = 'home';
     el.appendChild(root);
 
-    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], reviewTx = [];
+    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], recentTx = [], reviewTx = [];
     let stopCountdown = () => {};
 
     function draw() {
@@ -30,6 +30,8 @@ export default {
       const left = round2(budgeted - spent);
       const b = settings.budget || {};
       const alerts = computeAlerts(cats, spendByCategory(monthTx, month), Number(b.alertAt) || DEFAULT_ALERT_AT, b.alertsOn !== false);
+      const big = bigSettings(settings);
+      const bigList = big.on ? computeBigPurchases(cats, recentTx, { amount: big.amount }) : [];
       const today = todayISO();
       const dayPct = Number(today.slice(8, 10)) / new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0).getDate();
 
@@ -55,6 +57,8 @@ export default {
             <p class="muted small home-note">No monthly budgets yet. <a href="#/budget">Set them up in Budget → Plan</a>.</p>`}
           ${alerts.length ? `<div class="alerts">${alerts.slice(0, 3).map((a) => `
             <a class="alert-row ${a.level}" href="#/budget"><span>${a.level === 'over' ? '🚨' : '⚠️'} ${esc(alertMessage(a))}</span><span class="review-go">View ›</span></a>`).join('')}</div>` : ''}
+          ${bigList.length ? `<div class="alerts">${bigList.map((p) => `
+            <a class="alert-row big" href="#/budget"><span>💳 Large purchase: ${esc(bigMessage(p))}</span><span class="review-go">View ›</span></a>`).join('')}</div>` : ''}
           ${reviewTx.length ? `<a class="review-banner" href="#/budget"><span>⚠ <b>${reviewTx.length}</b> bank transaction${reviewTx.length === 1 ? '' : 's'} need${reviewTx.length === 1 ? 's' : ''} a category</span><span class="review-go">Review ›</span></a>` : ''}
         </section>
         ${goalsCard(wedding)}`;
@@ -124,7 +128,8 @@ export default {
       store.subscribe('goals', (l) => { goals = l; draw(); }),
       store.subscribe('contributions', (l) => { contribs = l; draw(); }),
       store.subscribe('weddingItems', (l) => { wItems = l; draw(); }),
-      store.subscribeWhere('transactions', [['date', '>=', `${monthKey(new Date())}-01`]], (l) => { monthTx = l; draw(); }),
+      // Shared with the alert monitor, so the last few months aren't downloaded twice.
+      subscribeRecent((l) => { recentTx = l; monthTx = l.filter((t) => t.date?.startsWith(monthKey(new Date()))); draw(); }),
       store.subscribeWhere('transactions', [['needsReview', '==', true]], (l) => { reviewTx = l; draw(); }),
     ];
 

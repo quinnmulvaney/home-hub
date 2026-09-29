@@ -80,7 +80,7 @@ def short_id(*parts):
 
 ALERT_RANK = {"near": 1, "over": 2}
 # Fixed bills (mortgage, rent, loans, insurance...) only alert when over budget; reaching it just means the bill was paid.
-FIXED_RE = re.compile(r"mortgage|rent|loan|insurance|tax|childcare|daycare|tuition|hoa|lease|student", re.I)
+FIXED_RE = re.compile(r"mortgage|\brent\b|loan|insurance|\btax|childcare|daycare|tuition|\bhoa\b|lease|student", re.I)
 
 
 def compute_alerts(cats, all_tx, month, alert_at):
@@ -104,23 +104,83 @@ def compute_alerts(cats, all_tx, month, alert_at):
     return sorted(out, key=lambda a: -a[3])
 
 
-def send_alerts(hh, cats, all_tx, month):
-    """Push a notification to every registered device when a category newly crosses its limit."""
+def add_months(month, n):
+    y, m = (int(x) for x in month.split("-"))
+    idx = y * 12 + (m - 1) + n
+    return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
+
+
+def big_purchases(cats, all_tx, new_tx, prefs, today):
+    """Newly synced purchases at or over the user's amount. Skips categories set to 'never', fixed bills, and
+    any category where a purchase that size happened in 2 of the last 3 full months (big purchases are normal there).
+    Mirrors computeBigPurchases in js/alerts.js."""
+    if prefs.get("bigOn") is not True:
+        return []
+    amount = float(prefs.get("bigAmount") or 0)
+    if amount <= 0:
+        return []
+    months = {add_months(today[:7], -i) for i in (1, 2, 3)}
+    big_months = collections.defaultdict(set)
+    for t in all_tx:
+        d = (t.get("date") or "")[:7]
+        if t.get("type") != "income" and float(t.get("amount") or 0) >= amount and d in months:
+            big_months[t.get("categoryId")].add(d)
+    skip = set()
+    for cid, c in cats.items():
+        mode = c.get("bigAlerts")
+        if mode is True:
+            continue
+        name = c.get("name", "")
+        if mode is False or (FIXED_RE.search(name) and "fee" not in name.lower()) or len(big_months[cid]) >= 2:
+            skip.add(cid)
+    since = (dt.date.fromisoformat(today) - dt.timedelta(days=3)).isoformat()
+    return [t for t in new_tx
+            if t.get("type") != "income" and float(t.get("amount") or 0) >= amount
+            and (t.get("date") or "") >= since and t.get("categoryId") not in skip]
+
+
+def send_alerts(hh, cats, all_tx, new_tx, today):
+    """Push notifications to every registered device: categories newly crossing their limit, and large purchases."""
+    month = today[:7]
     settings = hh.collection("settings").document("budget").get()
     prefs = (settings.to_dict() or {}) if settings.exists else {}
+    notes = []  # (title, body, tag)
+
+    state_ref = hh.collection("bankSync").document("alerts")
+    sent = {"month": month, "sent": {}}
+    fresh = []
     if prefs.get("alertsOn") is False:
         log("Budget alerts: turned off")
-        return
-    alert_at = float(prefs.get("alertAt") or 0.8)
-    state_ref = hh.collection("bankSync").document("alerts")
-    state = state_ref.get()
-    sent = (state.to_dict() or {}) if state.exists else {}
-    if sent.get("month") != month:
-        sent = {"month": month, "sent": {}}
-    fresh = [a for a in compute_alerts(cats, all_tx, month, alert_at)
-             if ALERT_RANK[a[2]] > ALERT_RANK.get(sent["sent"].get(a[0]), 0)]
-    log(f"Budget alerts: {len(fresh)} new")
-    if not fresh:
+    else:
+        alert_at = float(prefs.get("alertAt") or 0.8)
+        state = state_ref.get()
+        sent = (state.to_dict() or {}) if state.exists else {}
+        if sent.get("month") != month:
+            sent = {"month": month, "sent": {}}
+        fresh = [a for a in compute_alerts(cats, all_tx, month, alert_at)
+                 if ALERT_RANK[a[2]] > ALERT_RANK.get(sent["sent"].get(a[0]), 0)]
+        log(f"Budget alerts: {len(fresh)} new")
+
+        def line(a):
+            return f"{a[1]} is over its budget" if a[2] == "over" else f"{a[1]} is at {round(a[3] * 100)}% of its budget"
+        if len(fresh) == 1:
+            notes.append(("Over budget" if fresh[0][2] == "over" else "Nearing a budget limit", line(fresh[0]), "budget-alert"))
+        elif fresh:
+            notes.append((f"{len(fresh)} budget alerts", "; ".join(line(a) for a in fresh[:4]), "budget-alert"))
+
+    bigs = big_purchases(cats, all_tx, new_tx, prefs, today)
+    if prefs.get("bigOn") is True:
+        log(f"Large purchases: {len(bigs)} new")
+
+    def big_line(t):
+        label = t.get("note") or cats.get(t.get("categoryId"), {}).get("name") or "a purchase"
+        return f"${float(t['amount']):,.2f} at {label}"
+    if len(bigs) == 1:
+        notes.append(("Large purchase", big_line(bigs[0]), "big-purchase"))
+    elif bigs:
+        notes.append((f"{len(bigs)} large purchases", "; ".join(big_line(t) for t in bigs[:4]), "big-purchase"))
+
+    if not notes:
         return
     devices = [(d.id, (d.to_dict() or {}).get("token")) for d in hh.collection("devices").stream()]
     devices = [(i, t) for i, t in devices if t]
@@ -128,29 +188,28 @@ def send_alerts(hh, cats, all_tx, month):
         log(f"Alert push skipped ({'dry run' if DRY_RUN else 'no devices registered'}).")
         return
 
-    def line(a):
-        return f"{a[1]} is over its budget" if a[2] == "over" else f"{a[1]} is at {round(a[3] * 100)}% of its budget"
-    if len(fresh) == 1:
-        title = "Over budget" if fresh[0][2] == "over" else "Nearing a budget limit"
-        body = line(fresh[0])
-    else:
-        title = f"{len(fresh)} budget alerts"
-        body = "; ".join(line(a) for a in fresh[:4])
-    message = messaging.MulticastMessage(
-        tokens=[t for _, t in devices],
-        data={"title": title, "body": body, "url": "./#/budget", "tag": "budget-alert"},
-        webpush=messaging.WebpushConfig(headers={"Urgency": "high", "TTL": "3600"}),
-    )
-    response = messaging.send_each_for_multicast(message)
-    dead = 0
-    for (doc_id, _), r in zip(devices, response.responses):
-        if not r.success and isinstance(r.exception, (messaging.UnregisteredError, messaging.SenderIdMismatchError)):
-            hh.collection("devices").document(doc_id).delete()
-            dead += 1
-    for a in fresh:
-        sent["sent"][a[0]] = a[2]
-    state_ref.set(sent)
-    log(f"Alert push: sent to {response.success_count} device(s), {response.failure_count} failed, {dead} removed.")
+    ok = failed = dead = 0
+    for title, body, tag in notes:
+        message = messaging.MulticastMessage(
+            tokens=[t for _, t in devices],
+            data={"title": title, "body": body, "url": "./#/budget", "tag": tag},
+            webpush=messaging.WebpushConfig(headers={"Urgency": "high", "TTL": "3600"}),
+        )
+        response = messaging.send_each_for_multicast(message)
+        ok += response.success_count
+        failed += response.failure_count
+        gone = set()
+        for (doc_id, _), r in zip(devices, response.responses):
+            if not r.success and isinstance(r.exception, (messaging.UnregisteredError, messaging.SenderIdMismatchError)):
+                hh.collection("devices").document(doc_id).delete()
+                gone.add(doc_id)
+        dead += len(gone)
+        devices = [d for d in devices if d[0] not in gone]
+    if fresh:
+        for a in fresh:
+            sent["sent"][a[0]] = a[2]
+        state_ref.set(sent)
+    log(f"Alert push: {len(notes)} notification(s); {ok} delivered, {failed} failed, {dead} device(s) removed.")
 
 
 def fetch_simplefin(access_url, start):
@@ -353,7 +412,7 @@ def main():
         log(f"Dry run: {len(writes)} writes NOT applied.")
         try:
             new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
-            send_alerts(hh, cats, list(txs.values()) + new_tx, dt.datetime.now(TZ).strftime("%Y-%m"))
+            send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat())
         except Exception as e:
             log(f"Budget alerts failed: {type(e).__name__}")
         return
@@ -368,7 +427,7 @@ def main():
     # Spending-limit alerts. A failure here must never fail the sync itself.
     try:
         new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
-        send_alerts(hh, cats, list(txs.values()) + new_tx, dt.datetime.now(TZ).strftime("%Y-%m"))
+        send_alerts(hh, cats, list(txs.values()) + new_tx, new_tx, dt.datetime.now(TZ).date().isoformat())
     except Exception as e:
         log(f"Budget alerts failed: {type(e).__name__}")
 

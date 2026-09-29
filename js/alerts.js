@@ -1,7 +1,7 @@
 // Spending-limit alerts. computeAlerts is pure (also mirrored in sync/bank_sync.py for phone push);
 // notifyNew shows a toast + system notification when a category crosses a threshold while the app is open.
 import * as store from './store.js';
-import { money, toast, pref, setPref, monthKey } from './util.js';
+import { money, toast, pref, setPref, monthKey, addMonths, todayISO } from './util.js';
 import { spendByCategory, isFixedCost } from './stats.js';
 
 export const DEFAULT_ALERT_AT = 0.8;
@@ -64,17 +64,97 @@ export function notifyNew(alerts, month) {
   return fresh;
 }
 
-// Watches this month's spending on every screen so alerts show up wherever you are in the app.
+// ---------- large single purchases ----------
+// settings/budget: { bigOn, bigAmount }.  category.bigAlerts: undefined = automatic, true = always, false = never.
+// Automatic skips fixed bills (mortgage, rent...) and any category where a purchase over the amount happened in
+// at least 2 of the last 3 full months, because big purchases are normal there.
+
+// Map of categoryId -> why it's skipped: 'never' | 'fixed' | 'typical'.
+export function bigSkipReasons(cats, txs, amount, today = todayISO()) {
+  const nowM = today.slice(0, 7);
+  const months = [1, 2, 3].map((i) => addMonths(nowM, -i));
+  const bigMonths = {};
+  for (const t of txs) {
+    if (t.type === 'income' || !(t.amount >= amount) || !t.date) continue;
+    const m = t.date.slice(0, 7);
+    if (months.includes(m)) (bigMonths[t.categoryId] ||= new Set()).add(m);
+  }
+  const out = new Map();
+  for (const c of cats) {
+    if (c.type !== 'expense') continue;
+    if (c.bigAlerts === true) continue;
+    if (c.bigAlerts === false) out.set(c.id, 'never');
+    else if (isFixedCost(c.name)) out.set(c.id, 'fixed');
+    else if ((bigMonths[c.id]?.size || 0) >= 2) out.set(c.id, 'typical');
+  }
+  return out;
+}
+
+// Recent purchases (last `days` days) at or over `amount`, except in skipped categories. Newest first.
+export function computeBigPurchases(cats, txs, { amount, days = 3, today = todayISO() } = {}) {
+  if (!(amount > 0)) return [];
+  const skip = bigSkipReasons(cats, txs, amount, today);
+  const since = new Date(`${today}T12:00:00`);
+  since.setDate(since.getDate() - days);
+  const sinceISO = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`;
+  const names = new Map(cats.map((c) => [c.id, c.name]));
+  return txs
+    .filter((t) => t.type !== 'income' && t.amount >= amount && t.date >= sinceISO && !skip.has(t.categoryId))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount)
+    .slice(0, 5)
+    .map((t) => ({ id: t.id, amount: t.amount, note: t.note || names.get(t.categoryId) || 'Purchase', date: t.date, category: names.get(t.categoryId) || '' }));
+}
+
+export const bigMessage = (p) => `${money(p.amount)} at ${p.note}${p.category ? ` (${p.category})` : ''}`;
+
+let bigBaselined = false;
+export function notifyBig(list) {
+  let seen;
+  try { seen = JSON.parse(pref('bigSeen', '[]')); } catch { seen = []; }
+  const fresh = list.filter((p) => !seen.includes(p.id));
+  if (fresh.length) setPref('bigSeen', JSON.stringify([...seen, ...fresh.map((p) => p.id)].slice(-300)));
+  if (!bigBaselined) { bigBaselined = true; return []; }
+  for (const p of fresh) {
+    toast(`💳 Large purchase: ${bigMessage(p)}`);
+    if (!pushOnThisDevice()) showSystemNotification('Large purchase', bigMessage(p), `big-${p.id}`);
+  }
+  return fresh;
+}
+
+// ---------- monitor ----------
+// Watches recent spending on every screen so alerts appear wherever you are in the app, and shares the
+// last ~4 months of transactions with screens that want them (so they don't each download their own copy).
+
+const recentSubs = new Set();
+let recentTx = [];
+export function subscribeRecent(cb) {
+  recentSubs.add(cb);
+  cb(recentTx);
+  return () => recentSubs.delete(cb);
+}
+
+export const bigSettings = (settings) => {
+  const b = settings.budget || {};
+  return { on: b.bigOn === true && Number(b.bigAmount) > 0, amount: Number(b.bigAmount) || 0 };
+};
+
 export function startAlertMonitor() {
-  let cats = [], settings = {}, txs = [];
+  let cats = [], settings = {};
   const ready = { cats: false, tx: false };
   const check = () => {
     if (!ready.cats || !ready.tx) return;
     const month = monthKey(new Date());
     const b = settings.budget || {};
-    notifyNew(computeAlerts(cats, spendByCategory(txs, month), Number(b.alertAt) || DEFAULT_ALERT_AT, b.alertsOn !== false), month);
+    notifyNew(computeAlerts(cats, spendByCategory(recentTx, month), Number(b.alertAt) || DEFAULT_ALERT_AT, b.alertsOn !== false), month);
+    const big = bigSettings(settings);
+    if (big.on) notifyBig(computeBigPurchases(cats, recentTx, { amount: big.amount }));
   };
   store.subscribe('categories', (l) => { cats = l; ready.cats = true; check(); });
   store.subscribe('settings', (l) => { settings = Object.fromEntries(l.map((d) => [d.id, d])); check(); });
-  store.subscribeWhere('transactions', [['date', '>=', `${monthKey(new Date())}-01`]], (l) => { txs = l; ready.tx = true; check(); });
+  store.subscribeWhere('transactions', [['date', '>=', `${addMonths(monthKey(new Date()), -3)}-01`]], (l) => {
+    recentTx = l;
+    ready.tx = true;
+    recentSubs.forEach((cb) => cb(l));
+    check();
+  });
 }

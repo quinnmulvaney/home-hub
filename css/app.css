@@ -636,3 +636,9 @@ details summary { cursor: pointer; color: var(--text-2); font-size: 14px; margin
   .bell { width: 30px; height: 30px; font-size: 14px; }
   .drag-handle { width: 24px; }
 }
+
+/* large-purchase alerts & delete */
+.alert-row.big { border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.sep { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+.detail-big { margin-top: 12px; }
+.form-actions .btn.danger { border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); }
