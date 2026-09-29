@@ -4,8 +4,11 @@ import { goalStatus, weddingSummary, spendByCategory, round2, sumBy, upcomingBil
 import { computeAlerts, alertMessage, computeBigPurchases, bigMessage, bigSettings, subscribeRecent, DEFAULT_ALERT_AT } from '../alerts.js';
 import { countdownHtml, startCountdown } from '../countdown.js';
 import { ring } from '../charts.js';
+import { dayEvents, involves, fmtTime } from '../events.js';
+import { subscribePeople, roster, personById, initial } from '../people.js';
+import { acceptTask, declineTask } from '../tasks.js';
 
-store.registerCollections(['categories', 'transactions', 'settings', 'goals', 'contributions', 'weddingItems']);
+store.registerCollections(['categories', 'transactions', 'settings', 'goals', 'contributions', 'weddingItems', 'calendars', 'events', 'tasks', 'statuses']);
 
 export default {
   id: 'home',
@@ -16,7 +19,7 @@ export default {
     root.className = 'home';
     el.appendChild(root);
 
-    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], recentTx = [], reviewTx = [], bills = [];
+    let cats = [], goals = [], contribs = [], settings = {}, wItems = [], monthTx = [], recentTx = [], reviewTx = [], bills = [], calendars = [], events = [], tasks = [], statuses = [];
     const quick = { amount: '', note: '' };   // survives redraws while you type
     let stopCountdown = () => {};
 
@@ -38,6 +41,7 @@ export default {
 
       renderKeepingFocus(root, `
         ${heroCard(wedding)}
+        ${todayCard()}
         ${quickAddCard()}
         ${upcomingCard()}
         <section class="card">
@@ -67,6 +71,34 @@ export default {
         ${weekCard()}
         ${goalsCard(wedding)}`);
       stopCountdown = startCountdown(root);
+    }
+
+    // ---------- today: what's on for you (work calendars left out, like the morning summary) ----------
+    function todayCard() {
+      const today = todayISO();
+      const meId = store.meId();
+      const sts = roster().map((p) => ({ p, st: statuses.find((x) => x.uid === p.id && x.date === today) })).filter((x) => x.st);
+      const evs = dayEvents(events, calendars, today).filter((it) => !it.cal?.hideFromDigest && involves(it.assignees, it.cal, meId));
+      const mine = tasks.filter((t) => t.assignee === meId && t.status !== 'done' && (!t.due || t.due <= today))
+        .sort((a, b) => (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || (a.due || '9999').localeCompare(b.due || '9999')).slice(0, 6);
+      if (!evs.length && !mine.length && !sts.length) return '';
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Today</h2><a class="link" href="#/calendar">Calendar ›</a></div>
+          ${sts.length ? `<div class="status-row home-status">${sts.map(({ p, st }) => `<span class="status-chip" style="--pc:${esc(p.color || '#888')}"><b>${esc(initial(p))}</b>${st.emoji ? `<span aria-hidden="true">${esc(st.emoji)}</span>` : ''} ${esc(st.text)}</span>`).join('')}</div>` : ''}
+          ${evs.map((it) => {
+            const turn = it.ev.rotation?.order?.length && it.assignees[0] ? (it.assignees[0] === meId ? 'Your turn' : `${personById(it.assignees[0]).name}'s turn`) : '';
+            return `<div class="agenda-item" style="--cc:${esc(it.cal?.color || '#888')}">
+              <span class="agenda-main"><span class="agenda-time">${it.ev.start ? esc(fmtTime(it.ev.start)) : 'All day'}</span>
+                <span class="agenda-title">${esc(it.ev.title)} ${turn ? `<span class="turn ${it.assignees[0] === meId ? 'mine' : ''}">${esc(turn)}</span>` : ''}</span></span></div>`;
+          }).join('')}
+          ${mine.map((t) => `
+            <div class="task">
+              <span class="task-main"><span class="task-title" style="cursor:default">${esc(t.title)}</span>
+                <span class="task-meta">${t.status === 'pending' ? `<span class="small muted">from ${esc(personById(t.assignedBy).name)}</span>` : ''}${t.due && t.due < today ? '<span class="st late">Overdue</span>' : ''}</span></span>
+              ${t.status === 'pending' ? `<span class="task-actions"><button class="btn sm primary" data-home-accept="${esc(t.id)}">Accept</button><button class="btn sm" data-home-decline="${esc(t.id)}">Not today</button></span>` : ''}
+            </div>`).join('')}
+        </section>`;
     }
 
     // ---------- quick add ----------
@@ -197,6 +229,11 @@ export default {
     const unsubs = [
       store.subscribe('categories', (l) => { cats = l; draw(); }),
       store.subscribe('bills', (l) => { bills = l; draw(); }),
+      store.subscribe('calendars', (l) => { calendars = l; draw(); }),
+      store.subscribe('events', (l) => { events = l; draw(); }),
+      store.subscribe('tasks', (l) => { tasks = l; draw(); }),
+      store.subscribe('statuses', (l) => { statuses = l; draw(); }),
+      subscribePeople(() => draw()),
       store.subscribe('settings', (l) => { settings = Object.fromEntries(l.map((d) => [d.id, d])); draw(); }),
       store.subscribe('goals', (l) => { goals = l; draw(); }),
       store.subscribe('contributions', (l) => { contribs = l; draw(); }),
@@ -209,6 +246,12 @@ export default {
     root.addEventListener('input', (e) => {
       const k = e.target.dataset.quick;
       if (k) quick[k] = e.target.value;
+    });
+    root.addEventListener('click', (e) => {
+      const acc = e.target.closest('[data-home-accept]');
+      if (acc) { acceptTask(acc.dataset.homeAccept); toast('Accepted. It is on your day.'); return; }
+      const dec = e.target.closest('[data-home-decline]');
+      if (dec) { const t = tasks.find((x) => x.id === dec.dataset.homeDecline); if (t) { declineTask(t); toast('Passed back'); } return; }
     });
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-quick-cat]');

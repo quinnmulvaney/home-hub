@@ -7,17 +7,20 @@ import { esc, openModal, closeModal, pref, setPref, relTime, confirmDialog, toas
 store.registerCollections(['notifications']);
 
 const KINDS = {
-  budget: '⚠️', over: '🚨', big: '💳', bill: '🗓️', price: '💸', weekly: '📊', sync: '🏦',
+  budget: '⚠️', over: '🚨', big: '💳', bill: '🗓️', price: '💸', weekly: '📊', sync: '🏦', task: '📝', digest: '☀️',
 };
 
-// Add an entry once (same id = same entry). `quiet` entries don't count as unread.
-export function logNotification({ id, kind, title, body = '', link = '', quiet = false }) {
+// Add an entry once (same id = same entry). `quiet` entries don't count as unread. `forUid` makes it visible to one
+// person only (e.g. "Sam gave you a task"); without it everyone in the household sees it.
+export function logNotification({ id, kind, title, body = '', link = '', quiet = false, forUid = '' }) {
   if (store.getAll('notifications').some((n) => n.id === id)) return;
-  store.put('notifications', id, { kind, title, body, link, quiet, ts: Date.now() });
+  store.put('notifications', id, { kind, title, body, link, quiet, forUid, ts: Date.now() });
 }
 
+const mineOrShared = (n) => !n.forUid || n.forUid === store.meId();
+
 const seenAt = () => Number(pref('bellSeen', '0')) || 0;
-const unread = (list) => list.filter((n) => !n.quiet && (n.ts || 0) > seenAt());
+const unread = (list) => list.filter((n) => mineOrShared(n) && !n.quiet && (n.ts || 0) > seenAt());
 
 export function startBell(button, badge) {
   let list = [];
@@ -27,11 +30,23 @@ export function startBell(button, badge) {
     badge.textContent = n > 9 ? '9+' : String(n);
     button.setAttribute('aria-label', n ? `Notifications, ${n} new` : 'Notifications');
   };
-  store.subscribe('notifications', (l) => { list = l; paint(); });
+  // Something addressed to you that arrives while the app is open gets an instant heads-up.
+  const seen = new Set();
+  let primed = false;
+  store.subscribe('notifications', (l) => {
+    list = l;
+    paint();
+    for (const n of l) {
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      if (primed && n.forUid && n.forUid === store.meId() && !n.quiet && Date.now() - (n.ts || 0) < 60000) headsUp(n);
+    }
+    primed = true;
+  });
   window.addEventListener('homehub:datasource', paint);
 
   button.addEventListener('click', () => {
-    const sorted = [...list].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 30);
+    const sorted = list.filter(mineOrShared).sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 30);
     const lastSeen = seenAt();
     const dlg = openModal(`
       <div class="form">
@@ -53,11 +68,20 @@ export function startBell(button, badge) {
     dlg.querySelector('[data-m=close]').onclick = closeModal;
     dlg.querySelector('[data-m=clear]')?.addEventListener('click', async () => {
       if (!(await confirmDialog({ title: 'Clear all notifications?', body: 'This only clears the list. Nothing else changes.', confirmLabel: 'Clear all' }))) return;
-      list.forEach((n) => store.remove('notifications', n.id));
+      list.filter(mineOrShared).forEach((n) => store.remove('notifications', n.id));
       toast('Notifications cleared');
     });
     dlg.querySelectorAll('.notif').forEach((b) => {
       b.onclick = () => { const link = b.dataset.link; closeModal(); if (link) location.hash = link; };
     });
   });
+}
+
+async function headsUp(n) {
+  toast(`${KINDS[n.kind] || '🔔'} ${n.title}${n.body ? `: ${n.body}` : ''}`);
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted' || store.getState().sandbox) return;
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification(n.title, { body: n.body || '', tag: n.id, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', data: { url: `./${n.link || ''}` } });
+  } catch { /* the toast was enough */ }
 }

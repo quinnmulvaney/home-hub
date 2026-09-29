@@ -38,6 +38,10 @@ export const isCloudConfigured = () =>
 
 export const getState = () => ({ ...state });
 
+// Who is using the app right now (demo and signed-out modes get stand-in ids).
+export const meId = () => (state.sandbox ? 'demo-me' : state.user?.uid || 'local');
+export const meName = () => (state.sandbox ? 'Alex' : (state.user?.name || '').trim().split(/\s+/)[0] || 'Me');
+
 export function onStatus(cb) {
   statusSubs.add(cb);
   cb(getState());
@@ -384,6 +388,7 @@ async function startCloud(user) {
   try { localStorage.setItem(hidKey, hid); } catch {}
 
   enterHousehold(hid);
+  linkDeviceToUser(user.uid);
 
   if (isNew) {
     loadLocal();
@@ -395,6 +400,19 @@ async function startCloud(user) {
       for (const seed of seeds) await seed(put);
     }
   }
+}
+
+// Push notifications for a specific person need to know whose phone a token belongs to.
+async function linkDeviceToUser(uid) {
+  let id = null;
+  try { id = localStorage.getItem('homehub:pushDevice'); } catch { /* storage blocked */ }
+  if (!id) return;
+  try {
+    const { doc, getDoc, setDoc } = fb.fs;
+    const ref = doc(fb.db, 'households', state.householdId, 'devices', id);
+    const snap = await getDoc(ref);
+    if (snap.exists() && !snap.data().uid) await setDoc(ref, { uid }, { merge: true });
+  } catch { /* offline: try again next time */ }
 }
 
 function enterHousehold(hid) {
@@ -506,7 +524,7 @@ export async function enablePush() {
   const token = await getToken(getMessaging(fb.app), { vapidKey, serviceWorkerRegistration: registration });
   if (!token) throw new Error('Could not get a push token for this device.');
   const id = await deviceId(token);
-  put('devices', id, { token, platform: navigator.userAgentData?.platform || navigator.platform || '', addedBy: state.user?.email || '' });
+  put('devices', id, { token, uid: state.user?.uid || '', platform: navigator.userAgentData?.platform || navigator.platform || '', addedBy: state.user?.email || '' });
   try { localStorage.setItem('homehub:pushDevice', id); } catch {}
   return id;
 }

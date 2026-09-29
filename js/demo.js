@@ -25,7 +25,7 @@ export function generateDemo(todayISO) {
   const pick = (list) => list[Math.floor(rnd() * list.length)];
   const now = new Date(`${todayISO}T12:00:00`);
   const stamp = Date.now();
-  const data = { categories: {}, transactions: {}, accounts: {}, goals: {}, contributions: {}, settings: {}, weddingItems: {}, bankSync: {}, bills: {}, subscriptions: {}, notifications: {} };
+  const data = { categories: {}, transactions: {}, accounts: {}, goals: {}, contributions: {}, settings: {}, weddingItems: {}, bankSync: {}, bills: {}, subscriptions: {}, notifications: {}, people: {}, calendars: {}, events: {}, tasks: {}, notes: {}, statuses: {}, outbox: {} };
   const put = (coll, id, doc) => { data[coll][id] = { ...doc, id, updatedAt: stamp }; };
 
   // ---- categories (with monthly budgets) ----
@@ -154,6 +154,50 @@ export function generateDemo(todayISO) {
   note('n1', 'price', 'NewsToday Digital went up', 'From $9.99 to $12.99 a month', 5, '#/calendar');
   note('n4', 'bill', 'Internet is due soon', 'Internet bill of $79.99 is coming up', 30, '#/calendar');
   note('n5', 'weekly', 'Your week: $412.60 spent', '▼ 8% vs last week. Top: Groceries $168. Biggest: Bulk Warehouse $241', 52, '#/home');
+
+  // ---- people, calendars, events, tasks, notes ----
+  const ME = 'demo-me', SAM = 'demo-partner';
+  put('people', ME, { name: 'Alex', color: '#4f7396', createdAt: 1, digest: true });
+  put('people', SAM, { name: 'Sam', color: '#0f7f5f', createdAt: 2, digest: true });
+  put('calendars', 'cal_family', { name: 'Family', icon: '🏠', color: '#4f7396', members: [], hideFromDigest: false, order: 0 });
+  put('calendars', 'cal_couple', { name: 'Couple', icon: '💞', color: '#a4576b', members: [ME, SAM], hideFromDigest: false, order: 1 });
+  put('calendars', 'cal_work', { name: 'Alex – work', icon: '💼', color: '#5f7280', members: [ME], hideFromDigest: true, order: 2 });
+  put('calendars', 'cal_work2', { name: 'Sam – work', icon: '💼', color: '#b58a2a', members: [SAM], hideFromDigest: true, order: 3 });
+  put('calendars', 'cal_hobby', { name: 'Pottery club', icon: '🏺', color: '#6a5bb5', members: [ME], hideFromDigest: false, order: 4 });
+
+  const dowNow = (now.getDay() + 6) % 7;                       // Monday = 0
+  const monday = (() => { const d = new Date(now); d.setDate(d.getDate() - dowNow); return isoOf(d); })();
+  const on = (offset) => { const d = new Date(now); d.setDate(d.getDate() + offset); return isoOf(d); };
+  const ev = (id, calendarId, title, date, extra = {}) => put('events', id, {
+    calendarId, title, date, endDate: '', start: '', end: '', assignees: [], repeat: 'none', every: 1, weekdays: [], until: '', rotation: null, notes: '',
+    overrides: {}, exceptions: {}, done: {}, createdBy: ME, ...extra,
+  });
+  ev('e_trash', 'cal_family', 'Take out the trash', monday, { start: '19:00', end: '19:15', repeat: 'weekly', weekdays: [2], rotation: { order: [ME, SAM], by: 'time' } });
+  ev('e_dishes', 'cal_family', 'Do the dishes', monday, { start: '20:00', end: '20:30', repeat: 'daily', rotation: { order: [SAM, ME], by: 'week' } });
+  ev('e_commute', 'cal_family', 'Drive the morning commute', monday, { start: '07:30', end: '08:15', repeat: 'weekly', weekdays: [1, 2, 3, 4, 5], rotation: { order: [ME, SAM], by: 'week' } });
+  ev('e_work1', 'cal_work', 'Shift', monday, { start: '09:00', end: '17:00', repeat: 'weekly', weekdays: [1, 2, 3, 4, 5], assignees: [ME] });
+  ev('e_work2', 'cal_work2', 'Shift', monday, { start: '11:00', end: '19:30', repeat: 'weekly', weekdays: [2, 3, 4, 5, 6], assignees: [SAM] });
+  ev('e_pottery', 'cal_hobby', 'Pottery class', monday, { start: '18:30', end: '20:30', repeat: 'weekly', weekdays: [4], assignees: [ME] });
+  ev('e_date', 'cal_couple', "Dinner at Luigi's", on(((5 - now.getDay() + 7) % 7) || 7), { start: '19:30', end: '21:30' });
+  ev('e_dentist', 'cal_family', 'Dentist', on(2), { start: '15:30', end: '16:30', assignees: [ME] });
+  ev('e_bday', 'cal_family', "Sam's birthday 🎂", on(34), { repeat: 'yearly' });
+
+  const task = (id, title, assignee, status, extra = {}) => put('tasks', id, {
+    title, notes: '', due: '', assignee, assignedBy: '', status, createdBy: ME, createdAt: stamp - 3600e3, assignedAt: 0, ...extra,
+  });
+  task('t1', 'Pick up groceries', ME, 'pending', { assignedBy: SAM, assignedAt: stamp - 1800e3, due: todayISO, notes: 'Milk, eggs, sourdough' });
+  task('t2', 'Call the plumber', ME, 'accepted', { assignedBy: ME });
+  task('t3', 'Renew car registration', '', 'open', { due: on(10) });
+  task('t4', 'Confirm the florist', SAM, 'pending', { assignedBy: ME, assignedAt: stamp - 7200e3, due: on(3) });
+  task('t5', 'Order wedding invitations', ME, 'done', { assignedBy: ME, doneAt: stamp - 86400e3, doneBy: ME });
+
+  const item = (id, text, done = false) => ({ id, text, done });
+  put('notes', 'n_groc', { type: 'list', title: 'Groceries', body: '', pinned: true, calendarId: '', updatedAt: stamp - 600e3, items: [item('g1', 'Sourdough bread'), item('g2', 'Eggs'), item('g3', 'Oat milk', true), item('g4', 'Bananas'), item('g5', 'Dish soap')] });
+  put('notes', 'n_wed', { type: 'list', title: 'Wedding to-do', body: '', pinned: false, calendarId: '', updatedAt: stamp - 7200e3, items: [item('w1', 'Book the cake tasting'), item('w2', 'Send save-the-dates', true), item('w3', 'Choose the DJ playlist')] });
+  put('notes', 'n_house', { type: 'memo', title: 'House notes', body: 'Trash goes out Tuesday night.\nDishwasher: run the eco cycle.\nSpare key is with the neighbors.', pinned: false, calendarId: 'cal_family', updatedAt: stamp - 86400e3 * 3, items: [] });
+
+  put('statuses', `${ME}_${todayISO}`, { uid: ME, date: todayISO, text: 'Working from home today', emoji: '🏠' });
+  put('statuses', `${SAM}_${todayISO}`, { uid: SAM, date: todayISO, text: 'Out with friends tonight', emoji: '👥' });
 
   // ---- preferences ----
   put('settings', 'budget', { income: 5300, alertAt: 0.8, alertsOn: true, bigOn: true, bigAmount: 250, weeklyOn: true });

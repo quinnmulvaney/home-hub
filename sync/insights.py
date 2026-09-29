@@ -1,6 +1,7 @@
 """Pure logic for the bank-sync job: subscription detection, bill schedules, weekly summary.
 No network, no Firebase: everything takes plain dicts, so it can be tested on its own.
 Mirrors js/stats.js (bills, weekly summary) and js/merchant.js (merchant keys)."""
+import calendar as _calendar
 import collections
 import datetime as dt
 import re
@@ -183,3 +184,127 @@ def week_summary(all_tx, cats, today):
         "top": ((cats.get(top[0]) or {}).get("name", "Uncategorized"), round(top[1], 2)) if top else None,
         "biggest": ((big.get("note") or "a purchase"), round(float(big["amount"]), 2)) if big else None,
     }
+
+
+# ---------- calendar events (mirror of js/events.js) ----------
+
+def _dow(iso):
+    return (d(iso).weekday() + 1) % 7          # Sunday = 0, like JavaScript
+
+
+def monday_of(iso):
+    return add_days(iso, -d(iso).weekday())
+
+
+def event_occurrences(ev, start, end):
+    """[(date, index)] for every occurrence of `ev` from start to end inclusive. `index` counts occurrences since the
+    first one (used by take-turns rotation)."""
+    out = []
+    first = ev.get("date")
+    if not first or end < first:
+        return out
+    until = ev.get("until") or "9999-12-31"
+    last = min(end, until)
+    every = max(1, int(ev.get("every") or 1))
+    skip = ev.get("exceptions") or {}
+
+    def push(date, index):
+        if start <= date <= last and not skip.get(date):
+            out.append((date, index))
+
+    repeat = ev.get("repeat") or "none"
+    if repeat == "none":
+        stop = ev["endDate"] if (ev.get("endDate") or "") > first else first
+        cur = max(first, start)
+        while cur <= stop and cur <= end:
+            if not skip.get(cur):
+                out.append((cur, 0))
+            cur = add_days(cur, 1)
+    elif repeat == "daily":
+        cur, i = first, 0
+        while cur <= last:
+            push(cur, i)
+            cur, i = add_days(cur, every), i + 1
+    elif repeat == "weekly":
+        days = ev.get("weekdays") or [_dow(first)]
+        first_monday = d(monday_of(first))
+        cur, index = first, 0
+        while cur <= last and index < 5000:
+            if _dow(cur) in days and round((d(monday_of(cur)) - first_monday).days / 7) % every == 0:
+                push(cur, index)
+                index += 1
+            cur = add_days(cur, 1)
+    elif repeat in ("monthly", "yearly"):
+        s0 = d(first)
+        step = every if repeat == "monthly" else 12 * every
+        for i in range(1200):
+            total = (s0.month - 1) + i * step
+            y, m = s0.year + total // 12, total % 12 + 1
+            due = dt.date(y, m, min(s0.day, _calendar.monthrange(y, m)[1])).isoformat()
+            if due > last:
+                break
+            push(due, i)
+    return out
+
+
+def assignees_for(ev, date, index=0):
+    swap = (ev.get("overrides") or {}).get(date)
+    if swap and swap.get("assignees") is not None:
+        return list(swap["assignees"])
+    rot = ev.get("rotation") or {}
+    order = rot.get("order") or []
+    if order:
+        if rot.get("by") == "week":
+            i = (d(monday_of(date)) - d(monday_of(ev["date"]))).days // 7
+        else:
+            i = index
+        return [order[i % len(order)]]
+    return list(ev.get("assignees") or [])
+
+
+def involves(assignees, cal, uid):
+    if assignees:
+        return uid in assignees
+    members = (cal or {}).get("members") or []
+    return not cal or not members or uid in members
+
+
+def fmt_time(hhmm):
+    if not hhmm:
+        return ""
+    h, m = (int(x) for x in hhmm.split(":"))
+    return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def morning_summary(uid, name, today, calendars, events, tasks, statuses, people):
+    """Things worth knowing this morning for one person. Calendars marked hideFromDigest (work) are left out.
+    Returns (title, body, count) or None when there's nothing to say."""
+    items = []
+    timed = []
+    for ev in events:
+        cal = calendars.get(ev.get("calendarId"))
+        if (cal or {}).get("hideFromDigest"):
+            continue
+        for date, idx in event_occurrences(ev, today, today):
+            who = assignees_for(ev, date, idx)
+            if not involves(who, cal, uid):
+                continue
+            if (ev.get("done") or {}).get(date):
+                continue
+            turn = " (your turn)" if (ev.get("rotation") or {}).get("order") and who[:1] == [uid] else ""
+            label = f"{fmt_time(ev.get('start'))} {ev.get('title', 'Event')}{turn}".strip()
+            timed.append((ev.get("start") or "00:00", label))
+    items += [label for _, label in sorted(timed)]
+    for t in tasks:
+        if t.get("assignee") == uid and t.get("status") != "done" and (not t.get("due") or t["due"] <= today):
+            frm = f" (from {people.get(t.get('assignedBy'), {}).get('name', 'someone')})" if t.get("status") == "pending" and t.get("assignedBy") else ""
+            items.append(f"To do: {t.get('title', 'Task')}{frm}")
+    count = len(items)
+    others = [f"{people.get(s['uid'], {}).get('name', 'Someone')}: {s['text']}" for s in statuses if s.get("date") == today and s.get("uid") != uid and s.get("text")]
+    if not count:
+        return None
+    title = f"Good morning, {name}" if name else "Good morning"
+    body = " · ".join(items[:5]) + (f" · +{count - 5} more" if count > 5 else "")
+    if others:
+        body += "  |  " + "; ".join(others[:2])
+    return title, body, count

@@ -2,6 +2,7 @@ import * as store from './store.js';
 import { esc, applyAppearance, amountsHidden, setHideAmounts } from './util.js';
 import { startAlertMonitor } from './alerts.js';
 import { startBell } from './notifications.js';
+import { startPeople } from './people.js';
 import calendar from './modules/calendar.js';
 import home from './modules/home.js';
 import budget from './modules/budget.js';
@@ -95,6 +96,7 @@ applyAppearance();
 await store.init();
 route();
 startAlertMonitor();
+startPeople();
 startBell(document.getElementById('bell-btn'), document.getElementById('bell-badge'));
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

@@ -1,11 +1,11 @@
 // Offline support. App files: network-first (so updates show up right away),
 // falling back to cache when offline. Firebase SDK files: cache-first (URLs are versioned).
 // Firestore/Auth API traffic is never touched — the Firebase SDK handles its own offline cache.
-const CACHE = 'home-hub-v17';
+const CACHE = 'home-hub-v19';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/store.js', 'js/importer.js', 'js/merchant.js', 'js/util.js', 'js/firebase-config.js',
-  'js/stats.js', 'js/demo.js', 'js/swipe.js', 'js/notifications.js', 'js/charts.js', 'js/alerts.js', 'js/sortable.js', 'js/countdown.js',
+  'js/stats.js', 'js/events.js', 'js/people.js', 'js/tasks.js', 'js/demo.js', 'js/swipe.js', 'js/notifications.js', 'js/charts.js', 'js/alerts.js', 'js/sortable.js', 'js/countdown.js',
   'js/modules/home.js', 'js/modules/calendar.js', 'js/modules/budget.js', 'js/modules/goals.js', 'js/modules/wedding.js', 'js/modules/settings.js', 'js/modules/placeholder.js',
 ];
 
