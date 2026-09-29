@@ -927,3 +927,25 @@ body { font-size: calc(15px * var(--fs-scale, 1)); }
 .swatch .dots i { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--surface); margin-left: -6px; }
 .swatch .dots i:first-child { margin-left: 0; }
 .sw-name { font-weight: 600; font-size: calc(14px * var(--fs-scale, 1)); }
+
+/* ---------- privacy (hide amounts) and demo mode ---------- */
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.eye-btn {
+  width: 34px; height: 34px; border-radius: 50%; padding: 0; font-size: 16px; line-height: 1; display: grid; place-items: center;
+  background: rgb(255 255 255 / .14); color: #fff; border: 1px solid rgb(255 255 255 / .38);
+}
+.eye-btn:hover { background: rgb(255 255 255 / .24); }
+.eye-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.eye-btn[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); }
+
+/* Numbers typed into amount boxes show as dots until you tap into them */
+.hide-amounts input[inputmode="decimal"]:not(:focus) { -webkit-text-security: disc; text-security: disc; }
+
+.demo-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 14px; padding: 10px 14px;
+  border-radius: var(--radius); background: var(--gold-soft); border: 1px solid color-mix(in srgb, var(--gold) 65%, transparent); color: var(--text);
+}
+.demo-card { border-color: color-mix(in srgb, var(--gold) 45%, var(--border)); }
+.demo-on .real-only { display: none; }
+.sync-pill[data-status="sandbox"]::before { background: var(--gold); }
+.topbar .sync-pill[data-status="sandbox"] { border-color: var(--gold); }

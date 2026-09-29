@@ -20,6 +20,7 @@
         h.dataset.mode = dark ? 'dark' : 'light';
         h.dataset.contrast = g('contrast', '0') === '1' ? 'high' : 'normal';
         h.style.setProperty('--fs-scale', g('textSize', '1'));
+        h.classList.toggle('hide-amounts', g('hideAmounts', '0') === '1');
       } catch (e) { /* storage blocked: defaults apply */ }
     })();
   </script>
@@ -31,8 +32,12 @@
     <main class="main">
       <header class="topbar">
         <h1 id="page-title">Home Hub</h1>
-        <button class="sync-pill" id="sync-pill" type="button" title="Sync status"></button>
+        <div class="top-actions">
+          <button class="eye-btn" id="privacy-btn" type="button" aria-pressed="false" title="Hide amounts">👁</button>
+          <button class="sync-pill" id="sync-pill" type="button" title="Sync status"></button>
+        </div>
       </header>
+      <div id="demo-banner" class="demo-banner" hidden></div>
       <div id="view" class="view"></div>
     </main>
   </div>

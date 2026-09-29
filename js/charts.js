@@ -1,5 +1,5 @@
 // Small SVG chart helpers. Colors come from CSS variables so light/dark just work.
-import { esc, money, pref } from './util.js';
+import { esc, money, moneyCompact } from './util.js';
 
 export function niceMax(v, steps = 4) {
   if (!(v > 0)) return 100;
@@ -8,7 +8,7 @@ export function niceMax(v, steps = 4) {
   return [1, 2, 2.5, 5, 10].find((m) => m * p >= raw) * p * steps;
 }
 
-const compact = () => new Intl.NumberFormat(undefined, { style: 'currency', currency: pref('currency', 'USD'), notation: 'compact', maximumFractionDigits: 1 });
+const compact = () => ({ format: moneyCompact });
 
 // Line chart over shared x labels. series: [{ name, cls: 'req'|'act'|'proj', values: [number|null] }]
 // Renders a legend, the chart, and an accessible data table.

@@ -183,6 +183,7 @@ function plan(parsed, fromDate, existingTx, cats) {
 }
 
 export async function importCSVFile(file) {
+  if (store.getState().sandbox) { toast('Importing is turned off in demo mode.'); return; }
   const parsed = normalize(parseCSV(await file.text()), file.name);
   const dates = parsed.map((t) => t.date).filter(Boolean).sort();
   // Read what's already saved straight from the database (screens only keep the months they show in memory).

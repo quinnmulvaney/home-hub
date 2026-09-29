@@ -32,10 +32,12 @@ export function alertMessage(a) {
 }
 
 const pushOnThisDevice = () => { try { return !!localStorage.getItem('homehub:pushDevice'); } catch { return false; } };
+// Demo mode keeps its own "already told you" memory and never shows real system notifications.
+const memoryKey = (name) => name + (store.getState().sandbox ? '-demo' : '');
 export const notificationsGranted = () => 'Notification' in window && Notification.permission === 'granted';
 
 export async function showSystemNotification(title, body, tag = 'homehub') {
-  if (!notificationsGranted() || !('serviceWorker' in navigator)) return false;
+  if (store.getState().sandbox || !notificationsGranted() || !('serviceWorker' in navigator)) return false;
   try {
     const reg = await navigator.serviceWorker.ready;
     await reg.showNotification(title, { body, tag, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', data: { url: './#/budget' } });
@@ -48,13 +50,13 @@ export async function showSystemNotification(title, body, tag = 'homehub') {
 let baselined = false;
 export function notifyNew(alerts, month) {
   let seen;
-  try { seen = JSON.parse(pref('alerted', '{}')); } catch { seen = {}; }
+  try { seen = JSON.parse(pref(memoryKey('alerted'), '{}')); } catch { seen = {}; }
   if (seen.month !== month) seen = { month, sent: {} };
   const fresh = [];
   for (const a of alerts) {
     if ((RANK[a.level] || 0) > (RANK[seen.sent[a.id]] || 0)) { seen.sent[a.id] = a.level; fresh.push(a); }
   }
-  setPref('alerted', JSON.stringify(seen));
+  setPref(memoryKey('alerted'), JSON.stringify(seen));
   if (!baselined) { baselined = true; return []; }
   for (const a of fresh) {
     toast(`${a.level === 'over' ? '🚨' : '⚠️'} ${alertMessage(a)}`);
@@ -110,9 +112,9 @@ export const bigMessage = (p) => `${money(p.amount)} at ${p.note}${p.category ? 
 let bigBaselined = false;
 export function notifyBig(list) {
   let seen;
-  try { seen = JSON.parse(pref('bigSeen', '[]')); } catch { seen = []; }
+  try { seen = JSON.parse(pref(memoryKey('bigSeen'), '[]')); } catch { seen = []; }
   const fresh = list.filter((p) => !seen.includes(p.id));
-  if (fresh.length) setPref('bigSeen', JSON.stringify([...seen, ...fresh.map((p) => p.id)].slice(-300)));
+  if (fresh.length) setPref(memoryKey('bigSeen'), JSON.stringify([...seen, ...fresh.map((p) => p.id)].slice(-300)));
   if (!bigBaselined) { bigBaselined = true; return []; }
   for (const p of fresh) {
     toast(`💳 Large purchase: ${bigMessage(p)}`);
@@ -158,3 +160,6 @@ export function startAlertMonitor() {
     check();
   });
 }
+
+// When the data source changes (entering or leaving demo mode), don't announce everything that's suddenly "new".
+window.addEventListener('homehub:datasource', () => { baselined = false; bigBaselined = false; });

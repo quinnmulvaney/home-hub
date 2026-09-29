@@ -1,7 +1,7 @@
 import * as store from '../store.js';
 import {
   esc, money, parseAmount, todayISO, monthKey, addMonths, monthLabel, dayLabel,
-  openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId,
+  openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId, moneyCompact, amountsHidden,
 } from '../util.js';
 import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
 import { averages, spendByCategory, goalStatus, weddingSummary, round2, categoryInsight, reducibility } from '../stats.js';
@@ -353,7 +353,7 @@ export default {
       const groupW = plotW / data.length;
       const barW = Math.min(18, (groupW * 0.62 - 2) / 2);
       const y = (v) => T + plotH - (v / max) * plotH;
-      const compact = new Intl.NumberFormat(undefined, { style: 'currency', currency: pref('currency', 'USD'), notation: 'compact', maximumFractionDigits: 1 });
+      const compact = { format: moneyCompact };
 
       const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => {
         const v = max * f, yy = y(v);
@@ -450,7 +450,7 @@ export default {
         <section class="card">
           <div class="card-head"><h2>Monthly plan</h2></div>
           <label class="field"><span>Monthly income to plan around</span>
-            <div class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan-income data-focus-key="plan-income" value="${plannedIncome || ''}" placeholder="${avg.income ? Math.round(avg.income) : '0'}"></div>
+            <div class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan-income data-focus-key="plan-income" value="${plannedIncome || ''}" placeholder="${avg.income ? (amountsHidden() ? '•••' : Math.round(avg.income)) : '0'}"></div>
           </label>
           <p class="muted small">${avg.months ? `Your average over the last ${avg.months} full month${avg.months === 1 ? '' : 's'} is <b>${money(avg.income)}</b> in, <b>${money(avg.spent)}</b> out.` : 'Add a few months of transactions and averages appear here.'}
             ${plannedIncome ? '' : ' Leave blank to use the average.'}

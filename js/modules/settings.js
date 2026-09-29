@@ -1,5 +1,5 @@
 import * as store from '../store.js';
-import { esc, pref, setPref, toast, download, todayISO, PALETTES, applyAppearance } from '../util.js';
+import { esc, pref, setPref, toast, download, todayISO, PALETTES, applyAppearance, amountsHidden, setHideAmounts } from '../util.js';
 import { importCSVFile } from '../importer.js';
 import { showSystemNotification } from '../alerts.js';
 
@@ -21,9 +21,12 @@ export default {
     el.appendChild(root);
 
     function draw(s) {
+      root.classList.toggle('demo-on', !!s.sandbox);
       root.innerHTML = `
-        ${syncCard(s)}
-        ${s.mode === 'cloud' ? householdCard(s) : ''}
+        ${demoCard(s)}
+        ${s.sandbox ? '' : syncCard(s)}
+        ${!s.sandbox && s.mode === 'cloud' ? householdCard(s) : ''}
+        ${privacyCard()}
         ${alertsCard()}
         ${appearanceCard()}
         <section class="card">
@@ -34,12 +37,12 @@ export default {
             </select>
           </label>
         </section>
-        <section class="card">
+        <section class="card real-only">
           <div class="card-head"><h2>Import from your bank</h2></div>
           <p class="muted small">Upload a CSV from Chase (Account activity → Download) or an export from another budgeting app. Transfers between your own accounts are skipped, and re-importing the same file never creates duplicates.</p>
           <label class="btn primary">Import bank CSV<input type="file" accept=".csv,text/csv" data-input="bank-csv" hidden></label>
         </section>
-        <section class="card">
+        <section class="card real-only">
           <div class="card-head"><h2>Backup</h2></div>
           <p class="muted small">Download everything as a file, or restore from one. Restoring adds to and overwrites matching items — it never deletes.</p>
           <div class="btn-row">
@@ -56,6 +59,28 @@ export default {
             <li><b>Android (Chrome):</b> menu ⋮ → <i>Add to Home screen</i> → Install.</li>
           </ul>`}
         </section>`}`;
+    }
+
+    function privacyCard() {
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Privacy</h2></div>
+          <label class="check"><input type="checkbox" data-privacy ${amountsHidden() ? 'checked' : ''}><span><b>Hide amounts</b><br><span class="muted small">Replaces every dollar figure with •••. Handy when using the app around other people. The eye button at the top of every screen does the same thing.</span></span></label>
+          <p class="muted small">Notifications sent by the bank sync still show real amounts on your lock screen.</p>
+        </section>`;
+    }
+
+    function demoCard(s) {
+      return `
+        <section class="card demo-card">
+          <div class="card-head"><h2>Demo mode</h2><span class="badge ${s.sandbox ? 'warn' : ''}">${s.sandbox ? 'On' : 'Off'}</span></div>
+          <p class="muted small">Fills the app with a made-up household: invented bank accounts, transactions, goals and a wedding plan, so you can show it off without revealing anything real. Your real data is never touched, and anything you change in demo mode stays in the demo.</p>
+          <div class="btn-row">
+            ${s.sandbox
+              ? '<button class="btn primary" data-action="sandbox-off">Exit demo mode</button><button class="btn" data-action="sandbox-reset">Reset demo data</button>'
+              : '<button class="btn" data-action="sandbox-on">Turn on demo mode</button>'}
+          </div>
+        </section>`;
     }
 
     function appearanceCard() {
@@ -178,6 +203,20 @@ export default {
             download(`home-hub-backup-${todayISO()}.json`, JSON.stringify({ app: 'home-hub', version: 1, exportedAt: new Date().toISOString(), data }, null, 2));
             break;
           }
+          case 'sandbox-on':
+            if (!confirm('Turn on demo mode? You will see made-up data. Your real data stays safe and comes back when you exit.')) return;
+            await store.setSandbox(true);
+            toast('Demo mode is on');
+            location.hash = '#/home';
+            return;
+          case 'sandbox-off':
+            await store.setSandbox(false);
+            toast('Back to your real data');
+            return;
+          case 'sandbox-reset':
+            store.resetSandbox();
+            toast('Demo data reset');
+            return;
           case 'palette':
             setPref('palette', b.dataset.id);
             applyAppearance();
@@ -246,6 +285,7 @@ export default {
     });
 
     root.addEventListener('change', (e) => {
+      if (e.target.dataset.privacy !== undefined) { setHideAmounts(e.target.checked); return; }
       const a = e.target.dataset.appearance;
       if (!a) return;
       setPref(a, a === 'contrast' ? (e.target.checked ? '1' : '0') : e.target.value);
@@ -256,7 +296,7 @@ export default {
     // which would wipe what you're typing).
     let lastSig = '';
     return store.onStatus((s) => {
-      const sig = JSON.stringify([s.mode, s.status === 'offline', s.error, s.user?.uid, s.householdId, s.household?.name, s.household?.members?.length]);
+      const sig = JSON.stringify([s.mode, s.sandbox, s.status === 'offline', s.error, s.user?.uid, s.householdId, s.household?.name, s.household?.members?.length]);
       if (sig !== lastSig) { lastSig = sig; draw(s); }
     });
   },

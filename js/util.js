@@ -21,13 +21,31 @@ export function setPref(key, value) {
 
 let fmt = null;
 let fmtCurrency = null;
+// Privacy: "hide amounts" masks every dollar figure (the eye button in the header and Settings → Privacy).
+let hidden = false;
+try { hidden = localStorage.getItem('homehub:pref:hideAmounts') === '1'; } catch { /* storage blocked */ }
+export const amountsHidden = () => hidden;
+const MASK = /\d[\d.,\u00a0\u202f]*/g;
+export function setHideAmounts(on) {
+  hidden = !!on;
+  setPref('hideAmounts', hidden ? '1' : '0');
+  document.documentElement.classList.toggle('hide-amounts', hidden);
+  window.dispatchEvent(new Event('homehub:privacy'));
+}
+// Short axis labels like $1.2K (masked when amounts are hidden).
+export function moneyCompact(v) {
+  if (hidden) return '•••';
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency: pref('currency', 'USD'), notation: 'compact', maximumFractionDigits: 1 }).format(v);
+}
+
 export function money(n, { sign = false } = {}) {
   const cur = pref('currency', 'USD');
   if (cur !== fmtCurrency) {
     fmt = new Intl.NumberFormat(undefined, { style: 'currency', currency: cur });
     fmtCurrency = cur;
   }
-  const s = fmt.format(Math.abs(n || 0));
+  const s0 = fmt.format(Math.abs(n || 0));
+  const s = hidden ? s0.replace(MASK, '•••') : s0;
   if (n < 0) return `−${s}`;
   return sign && n > 0 ? `+${s}` : s;
 }
@@ -136,6 +154,7 @@ export function applyAppearance() {
   h.dataset.mode = dark ? 'dark' : 'light';
   h.dataset.contrast = pref('contrast', '0') === '1' ? 'high' : 'normal';
   h.style.setProperty('--fs-scale', pref('textSize', '1'));
+  h.classList.toggle('hide-amounts', hidden);
   const meta = document.querySelector('meta[name=theme-color]');
   if (meta) meta.content = getComputedStyle(h).getPropertyValue('--hero-1').trim() || '#4f7396';
 }

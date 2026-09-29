@@ -1,5 +1,5 @@
 import * as store from './store.js';
-import { esc, applyAppearance } from './util.js';
+import { esc, applyAppearance, amountsHidden, setHideAmounts } from './util.js';
 import { startAlertMonitor } from './alerts.js';
 import home from './modules/home.js';
 import budget from './modules/budget.js';
@@ -24,6 +24,8 @@ const nav = document.getElementById('nav');
 const view = document.getElementById('view');
 const title = document.getElementById('page-title');
 const pill = document.getElementById('sync-pill');
+const eye = document.getElementById('privacy-btn');
+const banner = document.getElementById('demo-banner');
 let cleanup = null;
 
 nav.innerHTML = `
@@ -52,6 +54,7 @@ const STATUS = {
   synced: ['Synced', 'All changes saved to the cloud.'],
   offline: ['Offline', 'Changes are saved and will sync when you reconnect.'],
   error: ['Sync error', ''],
+  sandbox: ['Demo mode', 'Showing made-up data. Your real data is untouched.'],
 };
 
 store.onStatus((s) => {
@@ -59,7 +62,28 @@ store.onStatus((s) => {
   pill.textContent = label;
   pill.title = s.error || tip;
   pill.dataset.status = s.status;
+  banner.hidden = !s.sandbox;
+  if (s.sandbox) {
+    banner.innerHTML = '<span>🎭 <b>Demo mode.</b> Everything here is made up. Your real data is untouched.</span><button class="btn sm" id="exit-demo" type="button">Exit demo</button>';
+  }
 });
+banner.addEventListener('click', async (e) => {
+  if (!e.target.closest('#exit-demo')) return;
+  await store.setSandbox(false);
+  route();
+});
+
+// Hide amounts: the eye button in the header (also in Settings → Privacy).
+function paintEye() {
+  const on = amountsHidden();
+  eye.textContent = on ? '🙈' : '👁';
+  eye.title = on ? 'Show amounts' : 'Hide amounts';
+  eye.setAttribute('aria-label', eye.title);
+  eye.setAttribute('aria-pressed', String(on));
+}
+eye.addEventListener('click', () => setHideAmounts(!amountsHidden()));
+window.addEventListener('homehub:privacy', () => { paintEye(); route(); });
+paintEye();
 pill.addEventListener('click', () => { location.hash = '#/settings'; });
 
 window.addEventListener('hashchange', route);

@@ -4,15 +4,19 @@
 //   cloud — Firestore under households/{householdId}/{collection}, synced live, works offline
 // Modules only call subscribe / add / put / update / remove and never care which backend is active.
 import { firebaseConfig, vapidKey } from './firebase-config.js';
-import { newId } from './util.js';
+import { newId, todayISO } from './util.js';
+import { generateDemo } from './demo.js';
 
 const FIREBASE_VERSION = '11.0.2';
 const LOCAL_KEY = 'homehub:data';
 const SEEDED_KEY = 'homehub:seeded';
+const SANDBOX_KEY = 'homehub:sandbox';            // '1' while demo mode is on
+const SANDBOX_DATA_KEY = 'homehub:sandbox:data';   // demo data lives apart from real data
 
 const state = {
-  mode: 'local',        // 'local' | 'cloud'
-  status: 'local',      // 'local' | 'signed-out' | 'syncing' | 'synced' | 'offline' | 'error'
+  mode: 'local',        // 'local' | 'cloud'   (demo mode uses 'local' with sandbox = true)
+  sandbox: false,       // demo mode: made-up data, real data untouched
+  status: 'local',      // 'local' | 'signed-out' | 'syncing' | 'synced' | 'offline' | 'error' | 'sandbox'
   error: '',
   user: null,
   householdId: null,
@@ -222,18 +226,26 @@ function writeFailed(err) {
 // ---------- local backend ----------
 
 function loadLocal() {
-  try { local = JSON.parse(localStorage.getItem(LOCAL_KEY)) || {}; } catch { local = {}; }
+  try { local = JSON.parse(localStorage.getItem(state.sandbox ? SANDBOX_DATA_KEY : LOCAL_KEY)) || {}; } catch { local = {}; }
 }
 
 function saveLocal() {
-  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(local)); } catch (e) { writeFailed(e); }
+  try { localStorage.setItem(state.sandbox ? SANDBOX_DATA_KEY : LOCAL_KEY, JSON.stringify(local)); } catch (e) { writeFailed(e); }
 }
 
 function localHasData() {
   return Object.values(local).some((docs) => Object.keys(docs || {}).length > 0);
 }
 
+function fillCacheFromLocal() {
+  for (const k of Object.keys(cache)) delete cache[k];
+  for (const [coll, docs] of Object.entries(local)) cache[coll] = new Map(Object.entries(docs || {}));
+  Object.keys(subs).forEach(emit);
+  whereSubs.forEach(attachWhere);
+}
+
 async function startLocal(status) {
+  state.sandbox = false;
   state.mode = 'local';
   state.user = null;
   state.householdId = null;
@@ -245,11 +257,45 @@ async function startLocal(status) {
     for (const seed of seeds) await seed(put);
     try { localStorage.setItem(SEEDED_KEY, '1'); } catch {}
   }
-  for (const k of Object.keys(cache)) delete cache[k];
-  for (const [coll, docs] of Object.entries(local)) cache[coll] = new Map(Object.entries(docs || {}));
-  Object.keys(subs).forEach(emit);
-  whereSubs.forEach(attachWhere);
+  fillCacheFromLocal();
   setStatus(status);
+}
+
+// ---------- demo (sandbox) mode ----------
+// Swaps in a generated, fictional household. Real data (local or cloud) is never read or written meanwhile.
+
+let lastUser = null;   // the signed-in Firebase user, so leaving demo mode can go straight back to the cloud
+
+async function startSandbox() {
+  state.sandbox = true;
+  state.mode = 'local';
+  state.user = null;
+  state.householdId = null;
+  state.household = null;
+  loadLocal();
+  if (!Object.keys(local).length) { local = generateDemo(todayISO()); saveLocal(); }
+  fillCacheFromLocal();
+  setStatus('sandbox');
+}
+
+export async function setSandbox(on) {
+  try { on ? localStorage.setItem(SANDBOX_KEY, '1') : localStorage.removeItem(SANDBOX_KEY); } catch {}
+  detachCloud();
+  if (on) await startSandbox();
+  else {
+    state.sandbox = false;
+    if (lastUser) await startCloud(lastUser);
+    else await startLocal(fb ? 'signed-out' : 'local');
+  }
+  window.dispatchEvent(new Event('homehub:datasource'));
+}
+
+export function resetSandbox() {
+  if (!state.sandbox) return;
+  local = generateDemo(todayISO());
+  saveLocal();
+  fillCacheFromLocal();
+  window.dispatchEvent(new Event('homehub:datasource'));
 }
 
 // ---------- cloud backend ----------
@@ -269,11 +315,13 @@ async function loadFirebase() {
 }
 
 export async function init() {
-  if (!isCloudConfigured()) return startLocal('local');
+  try { state.sandbox = localStorage.getItem(SANDBOX_KEY) === '1'; } catch {}
+  if (!isCloudConfigured()) return state.sandbox ? startSandbox() : startLocal('local');
   try {
     await loadFirebase();
   } catch (e) {
     console.error(e);
+    if (state.sandbox) { await startSandbox(); return; }
     await startLocal('error');
     setStatus('error', 'Could not load the sync library — check your connection.');
     return;
@@ -281,14 +329,18 @@ export async function init() {
   window.addEventListener('online', refreshSyncStatus);
   window.addEventListener('offline', refreshSyncStatus);
   // Resolve init once we know whether someone is signed in.
+  let firstAuth = true;
   await new Promise((resolve) => {
     fb.auth.onAuthStateChanged(fb.au, async (user) => {
+      lastUser = user;
       try {
-        if (user) await startCloud(user);
+        if (state.sandbox) { if (firstAuth) await startSandbox(); }   // demo mode ignores sign-in changes
+        else if (user) await startCloud(user);
         else { detachCloud(); await startLocal('signed-out'); }
       } catch (e) {
         writeFailed(e);
       }
+      firstAuth = false;
       resolve();
     });
   });
@@ -347,6 +399,7 @@ async function startCloud(user) {
 
 function enterHousehold(hid) {
   detachCloud();
+  state.sandbox = false;
   state.mode = 'cloud';
   state.householdId = hid;
   for (const k of Object.keys(cache)) delete cache[k];
