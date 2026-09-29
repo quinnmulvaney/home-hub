@@ -145,11 +145,9 @@ function hash(str) {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
-function plan(parsed, fromDate) {
-  const existingTx = new Set(store.getAll('transactions').map((t) => t.id));
+function plan(parsed, fromDate, existingTx, cats) {
   const seen = new Map();
   const out = { add: [], transfers: 0, duplicates: 0, beforeDate: 0, invalid: 0, newCats: new Map() };
-  const cats = store.getAll('categories');
   const catKey = (name, type) => `${type}:${name.toLowerCase()}`;
   const catByName = new Map(cats.map((c) => [catKey(c.name, c.type), c]));
 
@@ -187,6 +185,12 @@ function plan(parsed, fromDate) {
 export async function importCSVFile(file) {
   const parsed = normalize(parseCSV(await file.text()), file.name);
   const dates = parsed.map((t) => t.date).filter(Boolean).sort();
+  // Read what's already saved straight from the database (screens only keep the months they show in memory).
+  const [existingDocs, cats] = await Promise.all([
+    store.fetchWhere('transactions', [['date', '>=', dates[0] || '0000-00-00']]),
+    store.fetchWhere('categories', []),
+  ]);
+  const existingTx = new Set(existingDocs.map((t) => t.id));
   const defaultFrom = `${new Date().getFullYear()}-01-01`;
 
   const dlg = openModal(`
@@ -206,7 +210,7 @@ export async function importCSVFile(file) {
   let current;
 
   const refresh = () => {
-    current = plan(parsed, form.from.value || '0000-00-00');
+    current = plan(parsed, form.from.value || '0000-00-00', existingTx, cats);
     const spent = current.add.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
     const income = current.add.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
     summary.innerHTML = `
@@ -228,7 +232,7 @@ export async function importCSVFile(file) {
     btn.disabled = true;
     btn.textContent = 'Importing…';
     try {
-      const order = store.getAll('categories').length;
+      const order = cats.length;
       let i = 0;
       for (const [key, c] of current.newCats) {
         const id = store.add('categories', { ...c, budget: 0, order: order + i++, archived: false });

@@ -1,11 +1,12 @@
 // Offline support. App files: network-first (so updates show up right away),
 // falling back to cache when offline. Firebase SDK files: cache-first (URLs are versioned).
 // Firestore/Auth API traffic is never touched — the Firebase SDK handles its own offline cache.
-const CACHE = 'home-hub-v6';
+const CACHE = 'home-hub-v8';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon.svg',
   'js/app.js', 'js/store.js', 'js/importer.js', 'js/merchant.js', 'js/util.js', 'js/firebase-config.js',
-  'js/modules/budget.js', 'js/modules/settings.js', 'js/modules/placeholder.js',
+  'js/stats.js', 'js/charts.js', 'js/alerts.js',
+  'js/modules/budget.js', 'js/modules/goals.js', 'js/modules/wedding.js', 'js/modules/settings.js', 'js/modules/placeholder.js',
 ];
 
 self.addEventListener('install', (e) => {
@@ -44,4 +45,28 @@ self.addEventListener('fetch', (e) => {
       }))
     );
   }
+});
+
+// ---------- push notifications (spending-limit alerts sent by the bank-sync job) ----------
+
+self.addEventListener('push', (e) => {
+  let p = {};
+  try { p = e.data ? e.data.json() : {}; } catch { p = { title: 'Home Hub', body: e.data ? e.data.text() : '' }; }
+  const d = { ...(p.notification || {}), ...(p.data || {}) };
+  e.waitUntil(self.registration.showNotification(d.title || 'Home Hub', {
+    body: d.body || '',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    tag: d.tag || 'homehub',
+    data: { url: d.url || './#/budget' },
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const target = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+    for (const w of wins) if ('focus' in w) { w.navigate?.(target); return w.focus(); }
+    return self.clients.openWindow(target);
+  }));
 });

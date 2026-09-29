@@ -83,12 +83,24 @@ One-time setup (from this folder): generate a Firebase key (Project settings →
 Generate new private key), then run `python tools/setup_bank_sync.py` and follow the prompts.
 Run it manually any time: GitHub → Actions → Bank sync → Run workflow.
 
-## What's in the budget
+## What's in the app
 
-- **Overview:** income, spent, left to spend, and net for the month; a progress bar per category against its monthly budget (with a "today" marker showing how far through the month you are); 6‑month income vs. spending chart.
-- **Transactions:** add/edit/delete, search, filter by category, grouped by day.
-- **Categories:** starter set of common household categories; set monthly budgets, add your own with emoji icons, archive old ones (history is kept).
-- **Settings:** sync & household, currency, JSON backup/restore, install button.
+**Budget**
+- **Overview:** income, spent, left to spend and net for any period (month, year, year to date, last 3/12 months, all time, or a custom range); a bar per category against its budget (budgets scale to the period); spending-limit alerts; account balances; month-by-month chart.
+- **Transactions:** add/edit/delete, search, filter by category, and a *Needs review* queue for bank transactions that couldn't be categorized.
+- **Plan:** edit every category's monthly budget in one place, fill them from your recent averages, set the income you plan around, and see how much is left after budgets and goals. Set the alert threshold (70–100%).
+- **Categories:** names, icons, archive.
+
+**Goals**: savings goals, emergency fund (sized as 3 or 6 months of essential spending), and debt payoff (with interest). Each shows progress, the amount to set aside per month to hit the deadline, whether you're on track at your current pace, and a chart of saved vs. needed. Milestones (25/50/75/100%) and streaks keep it motivating. *Ways to get there faster* are computed from your own data: pay-yourself-first per paycheck, round-up jar, leftover-budget sweep, "what if I spend X% less on…", recurring charges to review, windfall splitter, 52-week challenge, no-spend days.
+
+**Wedding**: date, guest count and total budget; a budget split across the usual costs (edit any line); payments to vendors (optionally taken out of the wedding fund); a wedding fund with the monthly/weekly amount to save; charts for where the money goes and the saving path.
+
+**Alerts**: when a category reaches its threshold you get a message and a banner right away. With push set up (below), the bank-sync job also sends a notification to your phones when a synced purchase crosses a limit, even with the app closed.
+
+### Phone push alerts (optional, free)
+1. Firebase console → Project settings → **Cloud Messaging** → **Web Push certificates** → **Generate key pair**.
+2. Paste the key into `vapidKey` in [`js/firebase-config.js`](js/firebase-config.js), commit and push.
+3. On each phone: Settings → Alerts → **Turn on phone alerts** (allow notifications).
 
 ## Free tier limits (you won't hit these)
 
@@ -102,7 +114,12 @@ css/app.css             all styles (light + dark)
 js/app.js               navigation; list of modules
 js/store.js             data layer: local storage or Firestore, same API for every module
 js/util.js              formatting, dates, modal/toast helpers
-js/modules/budget.js    the budget feature
+js/modules/budget.js    overview, transactions, plan, categories
+js/modules/goals.js     goals + ways to save faster
+js/modules/wedding.js   wedding planner
+js/stats.js             shared calculations (averages, goal math, loans)
+js/charts.js            line chart and progress ring
+js/alerts.js            spending-limit alerts
 js/modules/settings.js  sync, household, backup, install
 js/modules/placeholder.js  "coming soon" pages
 js/firebase-config.js   your Firebase keys go here

@@ -1,6 +1,8 @@
 import * as store from './store.js';
 import { esc } from './util.js';
 import budget from './modules/budget.js';
+import goals from './modules/goals.js';
+import wedding from './modules/wedding.js';
 import settings from './modules/settings.js';
 import { placeholder } from './modules/placeholder.js';
 
@@ -8,6 +10,8 @@ import { placeholder } from './modules/placeholder.js';
 // To add a feature later, write a module and add it here.
 const modules = [
   budget,
+  goals,
+  wedding,
   placeholder('calendar', 'Calendar', '📅', 'Shared household calendar — bills due, appointments, chores.'),
   placeholder('shopping', 'Shopping', '🛒', 'Shared shopping lists that tick off live on every phone.'),
   settings,

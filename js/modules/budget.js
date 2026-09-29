@@ -4,11 +4,13 @@ import {
   openModal, closeModal, toast, renderKeepingFocus, pref, setPref, newId,
 } from '../util.js';
 import { merchantKey, suggestRule, ruleMatches } from '../merchant.js';
+import { averages, spendByCategory, goalStatus, weddingSummary, round2 } from '../stats.js';
+import { computeAlerts, alertMessage, notifyNew, DEFAULT_ALERT_AT } from '../alerts.js';
 
 // Data model (both collections live under the household):
 //   categories:   { name, icon, type: 'expense'|'income', budget (monthly), order, archived }
 //   transactions: { date 'YYYY-MM-DD', amount (expense < 0 = refund), type, categoryId, note, account?, source?, createdAt, createdBy }
-store.registerCollections(['categories', 'transactions', 'rules', 'accounts']);
+store.registerCollections(['categories', 'transactions', 'rules', 'accounts', 'settings', 'goals', 'contributions', 'weddingItems']);
 
 const DEFAULT_CATEGORIES = [
   ['Paycheck', '💵', 'income'], ['Other income', '🎁', 'income'],
@@ -56,13 +58,83 @@ export default {
     let accounts = [];
     let bankStatus = null;
     let rules = [];
+    let reviewTx = [];      // every bank transaction still needing a category, any month
+    let recentList = [];    // last 4 months, only used when the view window doesn't already cover them
+    let settings = {};
+    let goals = [];
+    let contribs = [];
+    let wItems = [];
+    const ready = { cats: false, tx: false };
+    let holdDraw = false;
+    let dirty = false;
+
+    // Only the months on screen are loaded from the database, not your whole history.
+    let txUnsub = null, recentUnsub = null, viewKey = '', recentKey = '';
+    const nowMonth = () => monthKey(new Date());
+    const recentFrom = () => `${addMonths(nowMonth(), -3)}-01`;
+
+    function viewWindow() {
+      if (ui.period === 'all') return { from: '0000-00-00', to: '9999-12-31' };
+      const r = currentRange();
+      const span = monthsBetween(r.from, r.to);
+      const count = span <= 6 ? 6 : Math.min(span, 24);
+      const chartFrom = `${addMonths(r.to.slice(0, 7), -(count - 1))}-01`;
+      return { from: chartFrom < r.from ? chartFrom : r.from, to: r.to };
+    }
+
+    function syncSubs() {
+      const w = viewWindow();
+      const key = `${w.from}|${w.to}`;
+      if (key !== viewKey) {
+        viewKey = key;
+        txUnsub?.();
+        txs = txs.filter((t) => t.date >= w.from && t.date <= w.to);
+        txUnsub = store.subscribeWhere('transactions', [['date', '>=', w.from], ['date', '<=', w.to]], (list) => {
+          txs = list;
+          ready.tx = true;
+          onData();
+        });
+      }
+      const covered = w.from <= recentFrom() && w.to >= todayISO();
+      const rk = covered ? 'covered' : recentFrom();
+      if (rk !== recentKey) {
+        recentKey = rk;
+        recentUnsub?.();
+        recentUnsub = null;
+        if (!covered) recentUnsub = store.subscribeWhere('transactions', [['date', '>=', recentFrom()]], (list) => { recentList = list; onData(); });
+      }
+    }
+    const recent = () => (recentKey === 'covered' ? txs.filter((t) => t.date >= recentFrom()) : recentList);
+    const findTx = (id) => txs.find((t) => t.id === id) || reviewTx.find((t) => t.id === id) || recent().find((t) => t.id === id);
+
+    const alertAt = () => Number(settings.budget?.alertAt) || DEFAULT_ALERT_AT;
+    const currentAlerts = () => computeAlerts(cats, spendByCategory(recent(), nowMonth()), alertAt());
+    function onData() {
+      if (ready.cats && ready.tx) notifyNew(currentAlerts(), nowMonth());
+      draw();
+    }
+    function refresh() { syncSubs(); draw(); }
+
+    // Set aside each month for goals + the wedding fund (feeds the Plan tab).
+    function goalNeeds() {
+      const g = goals.filter((x) => !x.archived).reduce((sum_, goal) => sum_ + (goalStatus(goal, contribs).neededPerMonth || 0), 0);
+      const w = settings.wedding?.date ? weddingSummary(settings.wedding, wItems, contribs).neededPerMonth || 0 : 0;
+      return round2(g + w);
+    }
+    function saveSetting(id, patch) { store.put('settings', id, { ...(settings[id] || {}), ...patch }); }
 
     const unsubs = [
-      store.subscribe('categories', (list) => { cats = sortCats(list); catById = new Map(cats.map((c) => [c.id, c])); draw(); }),
-      store.subscribe('transactions', (list) => { txs = list; draw(); }),
+      store.subscribe('categories', (list) => { cats = sortCats(list); catById = new Map(cats.map((c) => [c.id, c])); ready.cats = true; onData(); }),
       store.subscribe('accounts', (list) => { accounts = list; draw(); }),
       store.subscribe('bankSync', (list) => { bankStatus = list.find((d) => d.id === 'status') || null; draw(); }),
       store.subscribe('rules', (list) => { rules = list; }),
+      store.subscribe('settings', (list) => { settings = Object.fromEntries(list.map((d) => [d.id, d])); onData(); }),
+      store.subscribe('goals', (list) => { goals = list; draw(); }),
+      store.subscribe('contributions', (list) => { contribs = list; draw(); }),
+      store.subscribe('weddingItems', (list) => { wItems = list; draw(); }),
+      store.subscribeWhere('transactions', [['needsReview', '==', true]], (list) => { reviewTx = list; draw(); }),
+      () => txUnsub?.(),
+      () => recentUnsub?.(),
     ];
 
     // The date range every view uses. `months` scales monthly budgets to the range.
@@ -96,15 +168,18 @@ export default {
     }
 
     function draw() {
+      if (holdDraw) { dirty = true; return; }
       const range = currentRange();
       const rangeTx = txs.filter((t) => t.date && t.date >= range.from && t.date <= range.to);
       const body = ui.tab === 'transactions' ? transactionsTab(rangeTx, range)
         : ui.tab === 'categories' ? categoriesTab()
+        : ui.tab === 'plan' ? planTab()
         : overviewTab(rangeTx, range);
+      const showPeriod = ui.tab === 'overview' || ui.tab === 'transactions';
       const isHome = ui.period === 'month' && ui.month === monthKey(new Date());
       renderKeepingFocus(root, `
         <div class="toolbar">
-          <div class="period-row">
+          <div class="period-row" ${showPeriod ? '' : 'hidden'}>
             <select class="input period-select" data-input="period" aria-label="Time period">
               ${PERIODS.map(([id, label]) => `<option value="${id}" ${ui.period === id ? 'selected' : ''}>${label}</option>`).join('')}
             </select>
@@ -115,11 +190,11 @@ export default {
             </div>
           </div>
           <div class="tabs" role="tablist">
-            ${[['overview', 'Overview'], ['transactions', 'Transactions'], ['categories', 'Categories']].map(([id, label]) =>
+            ${[['overview', 'Overview'], ['transactions', 'Transactions'], ['plan', 'Plan'], ['categories', 'Categories']].map(([id, label]) =>
               `<button role="tab" class="tab ${ui.tab === id ? 'active' : ''}" aria-selected="${ui.tab === id}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}
           </div>
         </div>
-        ${ui.period === 'custom' ? `
+        ${ui.period === 'custom' && showPeriod ? `
           <div class="custom-range">
             <label><span>From</span><input class="input" type="date" data-input="from" value="${esc(range.from)}"></label>
             <label><span>To</span><input class="input" type="date" data-input="to" value="${esc(range.to)}"></label>
@@ -152,8 +227,17 @@ export default {
       const pace = isCurrent ? daysBetween(range.from, today) / daysBetween(range.from, range.to) : null;
       const inPeriod = ui.period === 'month' ? 'this month' : 'in this period';
 
-      const reviewCount = txs.filter((t) => t.needsReview).length;
+      const reviewCount = reviewTx.length;
+      const alertList = currentAlerts();
       return `
+        ${alertList.length ? `
+          <div class="alerts" aria-label="Spending limit alerts">
+            ${alertList.map((a) => `
+              <button class="alert-row ${a.level}" data-action="alert-cat" data-id="${esc(a.id)}">
+                <span>${a.level === 'over' ? '🚨' : '⚠️'} ${esc(alertMessage(a))}</span>
+                <span class="review-go">View ›</span>
+              </button>`).join('')}
+          </div>` : ''}
         ${reviewCount ? `
           <button class="review-banner" data-action="show-review">
             <span>⚠ <b>${reviewCount}</b> bank transaction${reviewCount === 1 ? '' : 's'} need${reviewCount === 1 ? 's' : ''} a category</span>
@@ -164,7 +248,7 @@ export default {
           ${tile('Spent', money(spent))}
           ${totalBudget > 0
             ? tile(left >= 0 ? 'Left to spend' : 'Over budget', money(Math.abs(left)), `of ${money(totalBudget)} budgeted${scale !== 1 ? ` (${scale} mo)` : ''}`, left < 0 ? 'bad' : '')
-            : tile('Left to spend', '—', 'Set budgets in Categories')}
+            : tile('Left to spend', '—', 'Set budgets in Plan')}
           ${tile('Net', money(income - spent, { sign: true }), income - spent >= 0 ? `Saved ${inPeriod}` : 'More out than in')}
         </div>
 
@@ -174,7 +258,7 @@ export default {
             ${isCurrent ? `<span class="muted small" title="The line on each bar shows how far through the ${ui.period === 'year' ? 'year' : 'month'} we are">│ = today</span>` : ''}
           </div>
           ${rows.length ? `<div class="budget-list">${rows.map((r) => budgetRow(r, pace)).join('')}</div>`
-            : `<p class="muted">No spending ${inPeriod}. Tap <b>+</b> to add a transaction${totalBudget ? '' : ', and set monthly budgets under <b>Categories</b>'}.</p>`}
+            : `<p class="muted">No spending ${inPeriod}. Tap <b>+</b> to add a transaction${totalBudget ? '' : ', and set monthly budgets under <b>Plan</b>'}.</p>`}
         </section>
 
         ${accountsCard()}
@@ -312,13 +396,87 @@ export default {
       return step * 4;
     }
 
+    // ---------- Plan ----------
+
+    function planTab() {
+      const active = cats.filter((c) => c.type === 'expense' && !c.archived);
+      const avg = averages(recent(), cats, 3);
+      const budgeted = round2(active.reduce((t, c) => t + (Number(c.budget) || 0), 0));
+      const goalsPerMonth = goalNeeds();
+      const plannedIncome = Number(settings.budget?.income) || 0;
+      const base = plannedIncome || avg.income;
+      const left = round2(base - budgeted - goalsPerMonth);
+      const share = (v) => (base > 0 ? Math.min(Math.max(v / base, 0), 1) * 100 : 0);
+      const at = Math.round(alertAt() * 100);
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Monthly plan</h2></div>
+          <label class="field"><span>Monthly income to plan around</span>
+            <div class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan-income data-focus-key="plan-income" value="${plannedIncome || ''}" placeholder="${avg.income ? Math.round(avg.income) : '0'}"></div>
+          </label>
+          <p class="muted small">${avg.months ? `Your average over the last ${avg.months} full month${avg.months === 1 ? '' : 's'} is <b>${money(avg.income)}</b> in, <b>${money(avg.spent)}</b> out.` : 'Add a few months of transactions and averages appear here.'}
+            ${plannedIncome ? '' : ' Leave blank to use the average.'}
+            ${avg.income && plannedIncome !== Math.round(avg.income) ? ` <button class="link" data-action="plan-income-avg">Use ${money(Math.round(avg.income))}</button>` : ''}</p>
+          <div class="alloc" role="img" aria-label="Where your monthly income goes">
+            <span class="alloc-seg budget" style="width:${share(budgeted)}%"></span>
+            <span class="alloc-seg goals" style="width:${share(Math.min(goalsPerMonth, Math.max(base - budgeted, 0)))}%"></span>
+          </div>
+          <div class="legend alloc-legend">
+            <span><i class="sw alloc-budget"></i>Budgets ${money(budgeted)}</span>
+            <span><i class="sw alloc-goals"></i>Goals ${money(goalsPerMonth)}</span>
+            <span class="${left < 0 ? 'bad' : 'good'}">${base > 0 ? (left >= 0 ? `Unassigned ${money(left)}` : `Over by ${money(-left)}`) : 'Enter an income'}</span>
+          </div>
+          ${goalsPerMonth ? '' : '<p class="muted small">Goals aren\'t using any of your income yet. Add some under <a href="#/goals">Goals</a>.</p>'}
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Monthly budgets</h2><span class="muted small">${money(budgeted)} total</span></div>
+          <div class="btn-row plan-tools">
+            <button class="btn" data-action="plan-fill">Fill from my average</button>
+            <button class="btn" data-action="plan-round">Round to $10</button>
+            <button class="btn" data-action="plan-clear">Clear all</button>
+          </div>
+          <div class="plan-list">
+            ${active.map((c) => {
+              const a = avg.byCat[c.id] || 0;
+              const b = Number(c.budget) || 0;
+              return `
+              <div class="plan-row">
+                <span class="cat-icon" aria-hidden="true">${esc(c.icon || '📦')}</span>
+                <span class="plan-main">
+                  <span class="name">${esc(c.name)}</span>
+                  <span class="muted small">${a > 0 ? `Averages ${money(a)}${b === Math.round(a) ? '' : ` · <button class="link" data-action="plan-use" data-id="${esc(c.id)}" data-val="${Math.round(a)}">use</button>`}` : 'No spending yet'}</span>
+                </span>
+                <span class="money-input"><span>$</span><input class="input" inputmode="decimal" data-plan="${esc(c.id)}" data-focus-key="plan-${esc(c.id)}" value="${b || ''}" placeholder="0" aria-label="${esc(c.name)} monthly budget"></span>
+              </div>`;
+            }).join('')}
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Alerts</h2></div>
+          <label class="field"><span>Warn me when a category reaches</span>
+            <select class="input" data-plan-alert>
+              ${[70, 80, 90, 100].map((v) => `<option value="${v}" ${v === at ? 'selected' : ''}>${v}% of its budget</option>`).join('')}
+            </select>
+          </label>
+          <p class="muted small">You'll see a banner on Overview and a message when it happens. To also get alerts on your phone when the app is closed, turn on notifications in <a href="#/settings">Settings</a>.</p>
+        </section>`;
+    }
+
+    // Save a plan edit without redrawing under the user's fingers (tabbing to the next box would lose focus).
+    function holdRedraw() {
+      holdDraw = true;
+      setTimeout(() => { holdDraw = false; if (dirty) { dirty = false; draw(); } }, 400);
+    }
+
     // ---------- Transactions ----------
 
     function transactionsTab(rangeTx, range) {
       const q = ui.search.trim().toLowerCase();
       const reviewing = ui.cat === REVIEW;
-      const reviewCount = txs.filter((t) => t.needsReview).length;
-      const list = (reviewing ? txs.filter((t) => t.needsReview) : rangeTx)
+      const reviewCount = reviewTx.length;
+      const list = (reviewing ? reviewTx : rangeTx)
         .filter((t) => reviewing || !ui.cat || t.categoryId === ui.cat)
         .filter((t) => {
           if (!q) return true;
@@ -481,7 +639,7 @@ export default {
         }
         closeModal();
         toast(extra ? `Saved, plus ${extra} more like it` : editing ? 'Saved' : 'Added');
-        if (!editing && ui.period === 'month' && !data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); draw(); }
+        if (!editing && ui.period === 'month' && !data.date.startsWith(ui.month)) { ui.month = data.date.slice(0, 7); refresh(); }
       };
     }
 
@@ -491,7 +649,7 @@ export default {
       const rule = { match: key, categoryId: data.categoryId, type: data.type };
       if (existing) store.update('rules', existing.id, rule);
       else store.add('rules', rule);
-      const others = txs.filter((t) => t.id !== exceptId && t.needsReview && ruleMatches(key, t.note));
+      const others = reviewTx.filter((t) => t.id !== exceptId && ruleMatches(key, t.note));
       others.forEach((t) => store.update('transactions', t.id, {
         categoryId: data.categoryId,
         type: data.type,
@@ -586,12 +744,48 @@ export default {
         case 'clear-filter': ui.cat = ''; ui.search = ''; break;
         case 'show-review': ui.cat = REVIEW; ui.search = ''; ui.tab = 'transactions'; break;
         case 'add-tx': return txModal(null);
-        case 'edit-tx': return txModal(txs.find((t) => t.id === id));
+        case 'edit-tx': return txModal(findTx(id));
+        case 'alert-cat': ui.period = 'month'; ui.month = nowMonth(); ui.cat = id; ui.search = ''; ui.tab = 'transactions'; break;
+        case 'plan-use': holdRedraw(); store.update('categories', id, { budget: Number(b.dataset.val) }); dirty = true; return;
+        case 'plan-income-avg': saveSetting('budget', { income: Math.round(averages(recent(), cats, 3).income) }); return;
+        case 'plan-fill': {
+          const avg = averages(recent(), cats, 3);
+          cats.filter((c) => c.type === 'expense' && !c.archived && avg.byCat[c.id] > 0)
+            .forEach((c) => store.update('categories', c.id, { budget: Math.round(avg.byCat[c.id]) }));
+          toast('Budgets set to your recent averages');
+          return;
+        }
+        case 'plan-round':
+          cats.filter((c) => c.type === 'expense' && Number(c.budget) > 0)
+            .forEach((c) => store.update('categories', c.id, { budget: Math.round(c.budget / 10) * 10 }));
+          return;
+        case 'plan-clear':
+          if (!confirm('Set every monthly budget back to zero?')) return;
+          cats.filter((c) => Number(c.budget) > 0).forEach((c) => store.update('categories', c.id, { budget: 0 }));
+          return;
         case 'add-cat': return catModal(null);
         case 'edit-cat': return catModal(cats.find((c) => c.id === id));
         default: return;
       }
-      draw();
+      refresh();
+    });
+
+    root.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.plan !== undefined) {
+        const v = t.value.trim() === '' ? 0 : parseAmount(t.value);
+        if (!(v >= 0)) { toast('Enter a number'); return; }
+        holdRedraw();
+        store.update('categories', t.dataset.plan, { budget: v });
+      } else if (t.dataset.planIncome !== undefined) {
+        const v = t.value.trim() === '' ? 0 : parseAmount(t.value);
+        if (!(v >= 0)) { toast('Enter a number'); return; }
+        holdRedraw();
+        saveSetting('budget', { income: v });
+      } else if (t.dataset.planAlert !== undefined) {
+        saveSetting('budget', { alertAt: Number(t.value) / 100 });
+        toast(`Alerts at ${t.value}%`);
+      }
     });
 
     root.addEventListener('input', (e) => {
@@ -606,9 +800,9 @@ export default {
         if (ui.period === 'year') ui.year = before.to.slice(0, 4) > thisYear ? thisYear : before.to.slice(0, 4);
         if (ui.period === 'month') ui.month = before.to > todayISO() ? monthKey(new Date()) : before.to.slice(0, 7);
         if (ui.period === 'custom') { ui.from = before.from; ui.to = before.to; }
-        draw();
+        refresh();
       }
-      if ((k === 'from' || k === 'to') && e.target.value) { ui[k] = e.target.value; draw(); }
+      if ((k === 'from' || k === 'to') && e.target.value) { ui[k] = e.target.value; refresh(); }
     });
 
     // Chart hover / tap tooltip.
@@ -639,7 +833,7 @@ export default {
       root.querySelectorAll('.col.hover').forEach((c) => c.classList.remove('hover'));
     });
 
-    draw();
+    refresh();
     return () => unsubs.forEach((u) => u());
   },
 };

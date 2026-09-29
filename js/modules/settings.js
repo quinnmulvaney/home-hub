@@ -1,6 +1,7 @@
 import * as store from '../store.js';
 import { esc, pref, setPref, toast, download, todayISO } from '../util.js';
 import { importCSVFile } from '../importer.js';
+import { showSystemNotification } from '../alerts.js';
 
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'AUD', 'NZD', 'MXN', 'JPY', 'INR'];
 
@@ -23,6 +24,7 @@ export default {
       root.innerHTML = `
         ${syncCard(s)}
         ${s.mode === 'cloud' ? householdCard(s) : ''}
+        ${alertsCard()}
         <section class="card">
           <div class="card-head"><h2>Preferences</h2></div>
           <label class="field"><span>Currency</span>
@@ -53,6 +55,28 @@ export default {
             <li><b>Android (Chrome):</b> menu ⋮ → <i>Add to Home screen</i> → Install.</li>
           </ul>`}
         </section>`}`;
+    }
+
+    function alertsCard() {
+      const supported = 'Notification' in window;
+      const perm = supported ? Notification.permission : 'unsupported';
+      const pushReady = store.pushSupported();
+      const pushOn = !!localStorage.getItem('homehub:pushDevice');
+      return `
+        <section class="card">
+          <div class="card-head"><h2>Alerts</h2><span class="badge ${pushOn ? 'ok' : ''}">${pushOn ? 'Phone alerts on' : perm === 'granted' ? 'While app is open' : 'Off'}</span></div>
+          <p class="muted small">Get warned when a category is close to its monthly limit. Set the threshold under <a href="#/budget">Budget → Plan</a>.</p>
+          ${!supported ? '<p class="muted small">This browser doesn’t support notifications.</p>' : `
+          <div class="btn-row">
+            ${pushOn
+              ? '<button class="btn" data-action="push-off">Turn off phone alerts</button>'
+              : `<button class="btn primary" data-action="push-on">${pushReady ? 'Turn on phone alerts' : 'Allow notifications'}</button>`}
+            ${perm === 'granted' ? '<button class="btn" data-action="push-test">Send a test</button>' : ''}
+          </div>
+          ${pushReady ? '<p class="muted small">Phone alerts also arrive when the app is closed, right after the bank sync finds a purchase that pushes a category over its limit.</p>'
+            : '<p class="muted small">Alerts show while the app is open. Bank-synced purchases are checked the next time you open it.</p>'}
+          ${perm === 'denied' ? '<p class="form-error small">Notifications are blocked for this site. Allow them in your browser’s site settings, then try again.</p>' : ''}`}
+        </section>`;
     }
 
     function syncCard(s) {
@@ -135,6 +159,21 @@ export default {
             download(`home-hub-backup-${todayISO()}.json`, JSON.stringify({ app: 'home-hub', version: 1, exportedAt: new Date().toISOString(), data }, null, 2));
             break;
           }
+          case 'push-on':
+            if (store.pushSupported()) { await store.enablePush(); toast('Phone alerts are on'); }
+            else if ((await Notification.requestPermission()) === 'granted') toast('Notifications allowed');
+            lastSig = '';
+            draw(store.getState());
+            break;
+          case 'push-off':
+            store.disablePush();
+            toast('Phone alerts turned off');
+            lastSig = '';
+            draw(store.getState());
+            break;
+          case 'push-test':
+            if (!(await showSystemNotification('Home Hub', 'Notifications are working. You’ll see budget alerts like this.', 'test'))) toast('Couldn’t show a notification');
+            break;
           case 'install':
             installPrompt.prompt();
             await installPrompt.userChoice;

@@ -26,7 +26,7 @@ import urllib.request
 from zoneinfo import ZoneInfo
 
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, messaging
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or "America/New_York")
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS") or 30)
@@ -76,6 +76,71 @@ def title_case(s):
 
 def short_id(*parts):
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:20]
+
+
+ALERT_RANK = {"near": 1, "over": 2}
+
+
+def compute_alerts(cats, all_tx, month, alert_at):
+    """Categories at or past `alert_at` of their monthly budget: [(cat_id, name, level, pct, spent, budget)]."""
+    spent = collections.defaultdict(float)
+    for t in all_tx:
+        if t.get("type") != "income" and (t.get("date") or "").startswith(month):
+            spent[t.get("categoryId")] += float(t.get("amount") or 0)
+    out = []
+    for cid, c in cats.items():
+        budget = float(c.get("budget") or 0)
+        if c.get("type") != "expense" or c.get("archived") or budget <= 0:
+            continue
+        pct = spent[cid] / budget
+        if pct >= alert_at:
+            out.append((cid, c.get("name", "Category"), "over" if pct >= 1 else "near", pct, spent[cid], budget))
+    return sorted(out, key=lambda a: -a[3])
+
+
+def send_alerts(hh, cats, all_tx, month):
+    """Push a notification to every registered device when a category newly crosses its limit."""
+    settings = hh.collection("settings").document("budget").get()
+    alert_at = float((settings.to_dict() or {}).get("alertAt") or 0.8) if settings.exists else 0.8
+    state_ref = hh.collection("bankSync").document("alerts")
+    state = state_ref.get()
+    sent = (state.to_dict() or {}) if state.exists else {}
+    if sent.get("month") != month:
+        sent = {"month": month, "sent": {}}
+    fresh = [a for a in compute_alerts(cats, all_tx, month, alert_at)
+             if ALERT_RANK[a[2]] > ALERT_RANK.get(sent["sent"].get(a[0]), 0)]
+    log(f"Budget alerts: {len(fresh)} new")
+    if not fresh:
+        return
+    devices = [(d.id, (d.to_dict() or {}).get("token")) for d in hh.collection("devices").stream()]
+    devices = [(i, t) for i, t in devices if t]
+    if DRY_RUN or not devices:
+        log(f"Alert push skipped ({'dry run' if DRY_RUN else 'no devices registered'}).")
+        return
+
+    def line(a):
+        return f"{a[1]} is over its budget" if a[2] == "over" else f"{a[1]} is at {round(a[3] * 100)}% of its budget"
+    if len(fresh) == 1:
+        title = "Over budget" if fresh[0][2] == "over" else "Nearing a budget limit"
+        body = line(fresh[0])
+    else:
+        title = f"{len(fresh)} budget alerts"
+        body = "; ".join(line(a) for a in fresh[:4])
+    message = messaging.MulticastMessage(
+        tokens=[t for _, t in devices],
+        data={"title": title, "body": body, "url": "./#/budget", "tag": "budget-alert"},
+        webpush=messaging.WebpushConfig(headers={"Urgency": "high", "TTL": "3600"}),
+    )
+    response = messaging.send_each_for_multicast(message)
+    dead = 0
+    for (doc_id, _), r in zip(devices, response.responses):
+        if not r.success and isinstance(r.exception, (messaging.UnregisteredError, messaging.SenderIdMismatchError)):
+            hh.collection("devices").document(doc_id).delete()
+            dead += 1
+    for a in fresh:
+        sent["sent"][a[0]] = a[2]
+    state_ref.set(sent)
+    log(f"Alert push: sent to {response.success_count} device(s), {response.failure_count} failed, {dead} removed.")
 
 
 def fetch_simplefin(access_url, start):
@@ -276,6 +341,11 @@ def main():
 
     if DRY_RUN:
         log(f"Dry run: {len(writes)} writes NOT applied.")
+        try:
+            new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
+            send_alerts(hh, cats, list(txs.values()) + new_tx, dt.datetime.now(TZ).strftime("%Y-%m"))
+        except Exception as e:
+            log(f"Budget alerts failed: {type(e).__name__}")
         return
 
     for i in range(0, len(writes), 400):
@@ -284,6 +354,13 @@ def main():
             batch.set(hh.collection(coll).document(doc_id), doc, merge=merge)
         batch.commit()
     log(f"Wrote {len(writes)} documents.")
+
+    # Spending-limit alerts. A failure here must never fail the sync itself.
+    try:
+        new_tx = [w[2] for w in writes if w[0] == "transactions" and not w[3]]
+        send_alerts(hh, cats, list(txs.values()) + new_tx, dt.datetime.now(TZ).strftime("%Y-%m"))
+    except Exception as e:
+        log(f"Budget alerts failed: {type(e).__name__}")
 
 
 if __name__ == "__main__":

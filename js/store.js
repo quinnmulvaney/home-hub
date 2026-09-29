@@ -3,7 +3,7 @@
 //   local — browser localStorage, this device only (used when sync isn't set up or you're signed out)
 //   cloud — Firestore under households/{householdId}/{collection}, synced live, works offline
 // Modules only call subscribe / add / put / update / remove and never care which backend is active.
-import { firebaseConfig } from './firebase-config.js';
+import { firebaseConfig, vapidKey } from './firebase-config.js';
 import { newId } from './util.js';
 
 const FIREBASE_VERSION = '11.0.2';
@@ -54,6 +54,61 @@ export function registerSeed(fn) { seeds.push(fn); }
 function emit(coll) {
   const list = [...(cache[coll]?.values() || [])];
   subs[coll]?.forEach((cb) => cb(list));
+  if (state.mode === 'local') whereSubs.forEach((s) => { if (s.coll === coll) s.cb(localMatches(s.coll, s.conds)); });
+}
+
+// ---------- filtered subscriptions (only load what a screen needs) ----------
+// conds: [[field, '==' | '>=' | '<=' | '>' | '<', value], ...]. Firestore serves these from an
+// automatic single-field index. Keep them to one range field so no composite index is needed.
+
+const whereSubs = new Set();
+let whereCounter = 0;
+
+function matchDoc(doc, conds) {
+  return conds.every(([f, op, v]) => {
+    const x = doc[f];
+    if (x === undefined || x === null) return false;
+    return op === '==' ? x === v : op === '>=' ? x >= v : op === '<=' ? x <= v : op === '>' ? x > v : x < v;
+  });
+}
+const localMatches = (coll, conds) => getAll(coll).filter((d) => matchDoc(d, conds));
+
+function cloudQuery(coll, conds) {
+  const { collection, query, where } = fb.fs;
+  return query(collection(fb.db, 'households', state.householdId, coll), ...conds.map((c) => where(...c)));
+}
+
+function attachWhere(sub) {
+  sub.unsub?.();
+  sub.unsub = null;
+  delete pending[sub.key];
+  if (state.mode === 'cloud') {
+    sub.unsub = fb.fs.onSnapshot(cloudQuery(sub.coll, sub.conds), { includeMetadataChanges: true }, (qs) => {
+      pending[sub.key] = qs.metadata.hasPendingWrites;
+      sub.cb(qs.docs.map((d) => ({ ...d.data(), id: d.id })));
+      refreshSyncStatus();
+    }, writeFailed);
+  } else {
+    sub.cb(localMatches(sub.coll, sub.conds));
+  }
+}
+
+export function subscribeWhere(coll, conds, cb) {
+  collections.add(coll);
+  const sub = { coll, conds, cb, unsub: null, key: `where${++whereCounter}` };
+  whereSubs.add(sub);
+  attachWhere(sub);
+  return () => {
+    whereSubs.delete(sub);
+    sub.unsub?.();
+    delete pending[sub.key];
+  };
+}
+
+export async function fetchWhere(coll, conds) {
+  if (state.mode !== 'cloud') return localMatches(coll, conds);
+  const qs = await fb.fs.getDocs(cloudQuery(coll, conds));
+  return qs.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
 export function subscribe(coll, cb) {
@@ -86,10 +141,16 @@ export function put(coll, id, data) {
   return id;
 }
 
+// Merge `patch` into an existing doc. In the cloud this is a server-side merge, so it works even
+// when the doc isn't in memory (screens only load the date range they show).
 export function update(coll, id, patch) {
-  const existing = cache[coll]?.get(id);
-  if (!existing) return;
-  put(coll, id, { ...existing, ...patch });
+  if (state.mode === 'cloud') {
+    const { doc: ref, setDoc } = fb.fs;
+    setDoc(ref(fb.db, 'households', state.householdId, coll, id), { ...patch, id, updatedAt: Date.now() }, { merge: true }).catch(writeFailed);
+    return;
+  }
+  const existing = local[coll]?.[id];
+  if (existing) put(coll, id, { ...existing, ...patch });
 }
 
 export function remove(coll, id) {
@@ -169,6 +230,7 @@ async function startLocal(status) {
   for (const k of Object.keys(cache)) delete cache[k];
   for (const [coll, docs] of Object.entries(local)) cache[coll] = new Map(Object.entries(docs || {}));
   Object.keys(subs).forEach(emit);
+  whereSubs.forEach(attachWhere);
   setStatus(status);
 }
 
@@ -185,7 +247,7 @@ async function loadFirebase() {
   const db = fs.initializeFirestore(app, {
     localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
   });
-  fb = { auth, fs, db, au: auth.getAuth(app) };
+  fb = { auth, fs, db, app, au: auth.getAuth(app) };
 }
 
 export async function init() {
@@ -278,6 +340,7 @@ function enterHousehold(hid) {
     refreshSyncStatus();
   }, writeFailed));
   for (const coll of Object.keys(subs)) attachCloud(coll);
+  whereSubs.forEach(attachWhere);
   refreshSyncStatus();
 }
 
@@ -302,6 +365,7 @@ function attachCloud(coll) {
 }
 
 function detachCloud() {
+  whereSubs.forEach((sub) => { sub.unsub?.(); sub.unsub = null; });
   cloudUnsubs.forEach((u) => u());
   cloudUnsubs = [];
   attached.clear();
@@ -327,4 +391,38 @@ export async function joinHousehold(code) {
   await setDoc(doc(fb.db, 'users', state.user.uid), { householdId: code }, { merge: true });
   try { localStorage.setItem(`homehub:hid:${state.user.uid}`, code); } catch {}
   enterHousehold(code);
+}
+
+// ---------- push notifications (Firebase Cloud Messaging) ----------
+// A device registers its FCM token under households/{id}/devices; the bank-sync job sends
+// spending-limit alerts to every registered device. Needs the Web Push key pair from
+// Firebase console → Project settings → Cloud Messaging → Web Push certificates.
+
+export const pushSupported = () =>
+  isCloudConfigured() && !!vapidKey && 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+
+async function deviceId(token) {
+  const bytes = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
+}
+
+export async function enablePush() {
+  if (state.mode !== 'cloud') throw new Error('Sign in first so alerts can reach this device.');
+  if (!pushSupported()) throw new Error('Push alerts need the Web Push key in js/firebase-config.js.');
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') throw new Error('Notifications were blocked. Allow them in your browser settings for this site.');
+  const { getMessaging, getToken } = await import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-messaging.js`);
+  const registration = await navigator.serviceWorker.ready;
+  const token = await getToken(getMessaging(fb.app), { vapidKey, serviceWorkerRegistration: registration });
+  if (!token) throw new Error('Could not get a push token for this device.');
+  const id = await deviceId(token);
+  put('devices', id, { token, platform: navigator.userAgentData?.platform || navigator.platform || '', addedBy: state.user?.email || '' });
+  try { localStorage.setItem('homehub:pushDevice', id); } catch {}
+  return id;
+}
+
+export function disablePush() {
+  let id = null;
+  try { id = localStorage.getItem('homehub:pushDevice'); localStorage.removeItem('homehub:pushDevice'); } catch {}
+  if (id && state.mode === 'cloud') remove('devices', id);
 }
